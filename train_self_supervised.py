@@ -89,11 +89,15 @@ USE_MEMORY = args.use_memory
 MESSAGE_DIM = args.message_dim
 MEMORY_DIM = args.memory_dim
 
-Path("./saved_models/").mkdir(parents=True, exist_ok=True)
-Path("./saved_checkpoints/").mkdir(parents=True, exist_ok=True)
-MODEL_SAVE_PATH = f'./saved_models/{args.prefix}-{args.data}.pth'
-get_checkpoint_path = lambda \
-    epoch: f'./saved_checkpoints/{args.prefix}-{args.data}-{epoch}.pth'
+
+BASE_PATH = "/content/drive/MyDrive/tgn_models"
+
+Path(BASE_PATH).mkdir(parents=True, exist_ok=True)
+
+MODEL_SAVE_PATH = f'{BASE_PATH}/{args.prefix}-{args.data}.pth'
+
+get_checkpoint_path = lambda epoch: \
+    f'{BASE_PATH}/{args.prefix}-{args.data}-{epoch}.pth'
 
 ### set up logger
 logging.basicConfig(level=logging.INFO)
