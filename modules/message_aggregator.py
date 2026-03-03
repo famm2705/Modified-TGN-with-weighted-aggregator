@@ -84,6 +84,47 @@ class MeanMessageAggregator(MessageAggregator):
     return to_update_node_ids, unique_messages, unique_timestamps
 
 
+class WeightedMessageAggregator(MessageAggregator):
+  def __init__(self, device, message_dim):
+    super(WeightedMessageAggregator, self).__init__(device)
+    self.device = device
+    self.scorer = nn.Linear(message_dim, 1, bias=False).to(device)
+
+  def aggregate(self, node_ids, messages):
+    unique_node_ids = np.unique(node_ids)
+
+    unique_messages = []
+    unique_timestamps = []
+    to_update_node_ids = []
+
+    for node_id in unique_node_ids:
+      if len(messages[node_id]) > 0:
+
+        to_update_node_ids.append(node_id)
+
+        # Stack message tensors: shape (n_messages, message_dim)
+        msg_tensor = torch.stack([m[0] for m in messages[node_id]]).to(self.device)
+
+        # Compute scalar scores: shape (n_messages, 1)
+        scores = self.scorer(msg_tensor)
+
+        # Normalize weights
+        weights = F.softmax(scores, dim=0)
+
+        # Weighted sum
+        aggregated = torch.sum(weights * msg_tensor, dim=0)
+
+        unique_messages.append(aggregated)
+
+        # Keep last timestamp (same as original code)
+        unique_timestamps.append(messages[node_id][-1][1])
+
+    unique_messages = torch.stack(unique_messages) if len(to_update_node_ids) > 0 else []
+    unique_timestamps = torch.stack(unique_timestamps) if len(to_update_node_ids) > 0 else []
+
+    return to_update_node_ids, unique_messages, unique_timestamps
+
+
 class AttentionMessageAggregator(MessageAggregator):
   def __init__(self, device, n_heads: int, message_dim: int, dropout: float=0, post_norm: Optional[bool] = None, learnable: Optional[bool]=None, add_cls_token: Optional[bool]=None):
     super(AttentionMessageAggregator, self).__init__(device)
@@ -179,7 +220,10 @@ def get_message_aggregator(aggregator_type, device, n_heads, message_dim, learna
     return LastMessageAggregator(device=device)
   elif aggregator_type == "mean":
     return MeanMessageAggregator(device=device)
+  elif aggregator_type == "weightedmean":
+    return WeightedMessageAggregator(device=device)
   elif aggregator_type == "attention":
     return AttentionMessageAggregator(device=device, n_heads=n_heads, message_dim=message_dim, learnable=learnable, add_cls_token=add_cls_token)
   else:
     raise ValueError("Message aggregator {} not implemented".format(aggregator_type))
+
