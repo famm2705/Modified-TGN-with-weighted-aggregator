@@ -221,9 +221,9 @@ def get_message_aggregator(aggregator_type, device, n_heads, message_dim, learna
   elif aggregator_type == "mean":
     return MeanMessageAggregator(device=device)
   elif aggregator_type == "weightedmean":
-    return WeightedMessageAggregator(device=device)
+    return WeightedMessageAggregator(device=device, , message_dim=message_dim)
   elif aggregator_type == "attention":
     return AttentionMessageAggregator(device=device, n_heads=n_heads, message_dim=message_dim, learnable=learnable, add_cls_token=add_cls_token)
   else:
     raise ValueError("Message aggregator {} not implemented".format(aggregator_type))
-
+    
