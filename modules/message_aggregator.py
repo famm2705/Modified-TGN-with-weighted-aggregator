@@ -140,27 +140,34 @@ class WeightedMessageAggregator(nn.Module):
 
     def aggregate(self, node_ids, messages):
         """
-        node_ids: list of nodes whose memory must be updated
-        messages: dict[node_id] -> [(message_tensor, timestamp), ...]
+        node_ids: list of node ids
+        messages: dict[node_id] -> [(msg_tensor, timestamp), ...]
         """
 
         unique_nodes = [n for n in node_ids if n in messages]
 
         if len(unique_nodes) == 0:
-            return [], torch.tensor([]).to(self.device)
+            return [], torch.empty((0,)), torch.empty((0,))
 
         all_msgs = []
         msg_node_index = []
+        timestamps = []
 
         for idx, node in enumerate(unique_nodes):
-            node_msgs = [m[0] for m in messages[node]]
-            all_msgs.extend(node_msgs)
-            msg_node_index.extend([idx] * len(node_msgs))
+            node_msgs = messages[node]
+
+            node_msg_tensors = [m[0] for m in node_msgs]
+            node_timestamps = [m[1] for m in node_msgs]
+
+            all_msgs.extend(node_msg_tensors)
+            msg_node_index.extend([idx] * len(node_msg_tensors))
+
+            # take latest timestamp
+            timestamps.append(node_timestamps[-1])
 
         msg_tensor = torch.stack(all_msgs).to(self.device)
         msg_node_index = torch.tensor(msg_node_index, device=self.device)
 
-        # score messages
         scores = self.scorer(msg_tensor).squeeze(-1)
 
         weights = torch.zeros_like(scores)
@@ -179,7 +186,9 @@ class WeightedMessageAggregator(nn.Module):
 
         aggregated.index_add_(0, msg_node_index, weighted_msgs)
 
-        return unique_nodes, aggregated
+        timestamps = torch.tensor(timestamps, device=self.device)
+
+        return unique_nodes, aggregated, timestamps
 
 
 class AttentionMessageAggregator(MessageAggregator):
