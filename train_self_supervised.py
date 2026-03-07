@@ -8,6 +8,7 @@ import numpy as np
 import pickle
 from pathlib import Path
 
+
 from evaluation.evaluation import eval_edge_prediction
 from tgn import TGN
 from utils.utils import EarlyStopMonitor, RandEdgeSampler, get_neighbor_finder
@@ -181,8 +182,13 @@ for i in range(args.n_runs):
   logger.info('num of batches per epoch: {}'.format(num_batch))
   idx_list = np.arange(num_instance)
 
+
   new_nodes_val_aps = []
+  new_nodes_val_aucs = []
+
   val_aps = []
+  val_aucs = []
+
   epoch_times = []
   total_epoch_times = []
   train_losses = []
@@ -277,15 +283,23 @@ for i in range(args.n_runs):
       tgn.memory.restore_memory(val_memory_backup)
 
     new_nodes_val_aps.append(nn_val_ap)
+    new_nodes_val_aucs.append(nn_val_auc)
+
     val_aps.append(val_ap)
+    val_aucs.append(val_auc)
+
     train_losses.append(np.mean(m_loss))
 
     # Save temporary results to disk
+
+
     pickle.dump({
       "val_aps": val_aps,
-      "new_nodes_val_aps": new_nodes_val_aps,
-      "train_losses": train_losses,
-      "epoch_times": epoch_times,
+     "val_aucs": val_aucs,
+     "new_nodes_val_aps": new_nodes_val_aps,
+      "new_nodes_val_aucs": new_nodes_val_aucs,
+     "train_losses": train_losses,
+     "epoch_times": epoch_times,
       "total_epoch_times": total_epoch_times
     }, open(results_path, "wb"))
 
@@ -338,11 +352,16 @@ for i in range(args.n_runs):
   logger.info(
     'Test statistics: New nodes -- auc: {}, ap: {}'.format(nn_test_auc, nn_test_ap))
   # Save results for this run
+  
   pickle.dump({
     "val_aps": val_aps,
+    "val_aucs": val_aucs,
     "new_nodes_val_aps": new_nodes_val_aps,
+    "new_nodes_val_aucs": new_nodes_val_aucs,
     "test_ap": test_ap,
+    "test_auc": test_auc,
     "new_node_test_ap": nn_test_ap,
+    "new_node_test_auc": nn_test_auc,
     "epoch_times": epoch_times,
     "train_losses": train_losses,
     "total_epoch_times": total_epoch_times
