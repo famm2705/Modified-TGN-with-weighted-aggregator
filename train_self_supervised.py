@@ -171,6 +171,7 @@ for i in range(args.n_runs):
             use_destination_embedding_in_message=args.use_destination_embedding_in_message,
             use_source_embedding_in_message=args.use_source_embedding_in_message,
             dyrep=args.dyrep, learnable=args.learnable, add_cls_token=args.add_cls_token)
+  print("Aggregator used by TGN:", args.aggregator)
   criterion = torch.nn.BCELoss()
   optimizer = torch.optim.Adam(tgn.parameters(), lr=LEARNING_RATE)
   tgn = tgn.to(device)
@@ -352,7 +353,7 @@ for i in range(args.n_runs):
   logger.info(
     'Test statistics: New nodes -- auc: {}, ap: {}'.format(nn_test_auc, nn_test_ap))
   # Save results for this run
-  
+
   pickle.dump({
     "val_aps": val_aps,
     "val_aucs": val_aucs,
