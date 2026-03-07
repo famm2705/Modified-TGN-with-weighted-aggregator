@@ -85,7 +85,7 @@ class MeanMessageAggregator(MessageAggregator):
 
 
 
-class WeightedMessageAggregator(nn.Module):
+
     def __init__(self, message_dim, device):
         super().__init__()
         self.device = device
@@ -126,6 +126,56 @@ class WeightedMessageAggregator(nn.Module):
 
         # aggregate using scatter
         aggregated = torch.zeros(len(unique_nodes), msg_tensor.size(1), device=self.device)
+
+        aggregated.index_add_(0, msg_node_index, weighted_msgs)
+
+        return unique_nodes, aggregated
+
+
+class WeightedMessageAggregator(nn.Module):
+    def __init__(self, message_dim, device):
+        super().__init__()
+        self.device = device
+        self.scorer = nn.Linear(message_dim, 1)
+
+    def aggregate(self, node_ids, messages):
+        """
+        node_ids: list of nodes whose memory must be updated
+        messages: dict[node_id] -> [(message_tensor, timestamp), ...]
+        """
+
+        unique_nodes = [n for n in node_ids if n in messages]
+
+        if len(unique_nodes) == 0:
+            return [], torch.tensor([]).to(self.device)
+
+        all_msgs = []
+        msg_node_index = []
+
+        for idx, node in enumerate(unique_nodes):
+            node_msgs = [m[0] for m in messages[node]]
+            all_msgs.extend(node_msgs)
+            msg_node_index.extend([idx] * len(node_msgs))
+
+        msg_tensor = torch.stack(all_msgs).to(self.device)
+        msg_node_index = torch.tensor(msg_node_index, device=self.device)
+
+        # score messages
+        scores = self.scorer(msg_tensor).squeeze(-1)
+
+        weights = torch.zeros_like(scores)
+
+        for i in range(len(unique_nodes)):
+            mask = msg_node_index == i
+            weights[mask] = F.softmax(scores[mask], dim=0)
+
+        weighted_msgs = weights.unsqueeze(-1) * msg_tensor
+
+        aggregated = torch.zeros(
+            len(unique_nodes),
+            msg_tensor.size(1),
+            device=self.device
+        )
 
         aggregated.index_add_(0, msg_node_index, weighted_msgs)
 
