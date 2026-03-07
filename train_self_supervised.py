@@ -43,7 +43,7 @@ parser.add_argument('--message_function', type=str, default="identity", choices=
   "mlp", "identity"], help='Type of message function')
 parser.add_argument('--memory_updater', type=str, default="gru", choices=[
   "gru", "rnn"], help='Type of memory updater')
-parser.add_argument('--aggregator', type=str, default="last", choices=["last", "mean", "attention", "weightedmean"], help='Type of message aggregator')
+parser.add_argument('--aggregator', type=str, default="last", choices=["last", "mean", "weightedmean", "attention"], help='Type of message aggregator')
 parser.add_argument('--memory_update_at_end', action='store_true',
                     help='Whether to update memory at the end or at the start of the batch')
 parser.add_argument('--message_dim', type=int, default=100, help='Dimensions of the messages')
@@ -89,7 +89,6 @@ USE_MEMORY = args.use_memory
 MESSAGE_DIM = args.message_dim
 MEMORY_DIM = args.memory_dim
 
-<<<<<<< HEAD
 
 BASE_PATH = "/content/drive/MyDrive/tgn_models"
 
@@ -99,13 +98,6 @@ MODEL_SAVE_PATH = f'{BASE_PATH}/{args.prefix}-{args.data}.pth'
 
 get_checkpoint_path = lambda epoch: \
     f'{BASE_PATH}/{args.prefix}-{args.data}-{epoch}.pth'
-=======
-Path("./saved_models/").mkdir(parents=True, exist_ok=True)
-Path("./saved_checkpoints/").mkdir(parents=True, exist_ok=True)
-MODEL_SAVE_PATH = f'/content/drive/MyDrive/tgn_models/{args.prefix}-{args.data}.pth'
-get_checkpoint_path = lambda epoch: \
-    f'/content/drive/MyDrive/tgn_models/{args.prefix}-{args.data}-{epoch}.pth'
->>>>>>> a54e0c8 (Add weighted and attention aggregators and update result storage)
 
 ### set up logger
 logging.basicConfig(level=logging.INFO)
@@ -155,8 +147,11 @@ mean_time_shift_src, std_time_shift_src, mean_time_shift_dst, std_time_shift_dst
   compute_time_statistics(full_data.sources, full_data.destinations, full_data.timestamps)
 
 for i in range(args.n_runs):
-  results_path = "results/{}_{}.pkl".format(args.prefix, i) if i > 0 else "results/{}.pkl".format(args.prefix)
-  Path("results/").mkdir(parents=True, exist_ok=True)
+  RESULTS_PATH = "/content/drive/MyDrive/tgn_results"
+
+  results_path = f"{RESULTS_PATH}/{args.prefix}_{i}.pkl" if i > 0 else f"{RESULTS_PATH}/{args.prefix}.pkl"
+  
+  Path(RESULTS_PATH).mkdir(parents=True, exist_ok=True)
 
   # Initialize Model
   tgn = TGN(neighbor_finder=train_ngh_finder, node_features=node_features,
