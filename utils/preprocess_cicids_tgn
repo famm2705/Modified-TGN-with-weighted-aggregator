@@ -4,10 +4,10 @@ import glob
 import os
 
 # --- CONFIGURATION ---
-INPUT_FOLDER = "/content/drive/MyDrive/flows"  # path to your CICIDS CSV files
+INPUT_FOLDER = "/content/drive/MyDrive/flows"  # change this to your path
 OUTPUT_FOLDER = "data"
 DATASET_NAME = "cicids"
-NODE_FEATURE_DIM = 172  # must match TGN node_dim
+NODE_FEATURE_DIM = 172
 EDGE_FEATURE_FILL = 0.0
 
 # --- LOAD CSV FILES ---
@@ -20,57 +20,55 @@ for f in files:
     dfs.append(df)
 df = pd.concat(dfs, ignore_index=True)
 
-# --- CLEAN AND PREPARE DATA ---
+# --- CLEAN COLUMNS ---
 print("Cleaning column names...")
 df.columns = df.columns.str.strip()
 
+# --- CONVERT TIMESTAMP ---
 print("Converting timestamps to seconds...")
 df["ts"] = pd.to_datetime(df["Timestamp"], errors="coerce").astype("int64") // 10**9
 
-# --- MAP NODES TO IDs ---
-print("Mapping nodes (IP -> node ID)...")
-node_map = {}
-node_id = 0
-def map_node(ip):
-    global node_id
-    if ip not in node_map:
-        node_map[ip] = node_id
-        node_id += 1
-    return node_map[ip]
+# --- MAP NODE IDs ---
+print("Mapping nodes (IP -> contiguous node ID)...")
+unique_nodes = np.unique(np.concatenate([df['Source IP'].values, df['Destination IP'].values]))
+node_map = {ip: idx for idx, ip in enumerate(unique_nodes)}
+df['u'] = df['Source IP'].map(node_map)
+df['i'] = df['Destination IP'].map(node_map)
 
-df["u"] = df["Source IP"].apply(map_node)
-df["i"] = df["Destination IP"].apply(map_node)
+num_nodes = len(unique_nodes)
+print("Total nodes:", num_nodes)
 
-# --- SORT BY TIMESTAMP & ENSURE STRICTLY INCREASING ---
-print("Sorting by timestamp and fixing duplicates...")
+# --- SORT AND FIX TIMESTAMPS ---
+print("Sorting by timestamp...")
 df = df.sort_values("ts").reset_index(drop=True)
-df["ts"] += np.arange(len(df)) * 1e-9  # enforce strict increasing timestamps
 
-# --- EDGE INDEX & LABELS ---
+# Ensure strictly increasing timestamps per node
+print("Ensuring strictly increasing timestamps per node...")
+epsilon = 1e-9
+df['ts'] += df.groupby('u').cumcount() * epsilon
+df['ts'] += df.groupby('i').cumcount() * epsilon
+
+# --- EDGE INDEX AND LABELS ---
 print("Generating edge index and labels...")
 df["idx"] = np.arange(len(df))
 df["label"] = (df["Label"] != "BENIGN").astype(int)
 
 # --- EDGE FEATURES ---
 print("Extracting numeric edge features...")
-exclude_cols = [
-    "Source IP", "Destination IP", "Timestamp", "Label",
-    "u", "i", "ts", "idx", "label"
-]
+exclude_cols = ["Source IP", "Destination IP", "Timestamp", "Label",
+                "u", "i", "ts", "idx", "label"]
 feature_cols = [c for c in df.columns if c not in exclude_cols]
-
 edge_features = df[feature_cols].apply(pd.to_numeric, errors='coerce').fillna(EDGE_FEATURE_FILL).values.astype(np.float32)
 
 # --- NODE FEATURES ---
 print("Creating node features...")
-num_nodes = max(df["u"].max(), df["i"].max()) + 1
 node_features = np.random.rand(num_nodes, NODE_FEATURE_DIM).astype(np.float32)
 
-# --- SAVE DATASETS ---
-print("Saving processed dataset...")
+# --- SAVE FILES ---
+print("Saving dataset...")
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
-
 graph_df = df[["u", "i", "ts", "idx", "label"]]
+
 graph_df.to_csv(f"{OUTPUT_FOLDER}/ml_{DATASET_NAME}.csv", index=False)
 np.save(f"{OUTPUT_FOLDER}/ml_{DATASET_NAME}.npy", edge_features)
 np.save(f"{OUTPUT_FOLDER}/ml_{DATASET_NAME}_node.npy", node_features)
