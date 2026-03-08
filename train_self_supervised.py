@@ -95,10 +95,10 @@ BASE_PATH = "/content/drive/MyDrive/tgn_models"
 
 Path(BASE_PATH).mkdir(parents=True, exist_ok=True)
 
-MODEL_SAVE_PATH = f'{BASE_PATH}/{args.prefix}-{args.data}.pth'
+MODEL_SAVE_PATH = f'{BASE_PATH}/{args.prefix}-{args.aggregator}-{args.data}.pth'
 
 get_checkpoint_path = lambda epoch: \
-    f'{BASE_PATH}/{args.prefix}-{args.data}-{epoch}.pth'
+    f'{BASE_PATH}/{args.prefix}-{args.aggregator}-{args.data}-{epoch}.pth'
 
 ### set up logger
 logging.basicConfig(level=logging.INFO)
@@ -150,7 +150,11 @@ mean_time_shift_src, std_time_shift_src, mean_time_shift_dst, std_time_shift_dst
 for i in range(args.n_runs):
   RESULTS_PATH = "/content/drive/MyDrive/tgn_results"
 
-  results_path = f"{RESULTS_PATH}/{args.prefix}_{i}.pkl" if i > 0 else f"{RESULTS_PATH}/{args.prefix}.pkl"
+  results_path = (
+    f"{RESULTS_PATH}/{args.prefix}-{args.aggregator}-{args.data}_{i}.pkl"
+    if i > 0
+    else f"{RESULTS_PATH}/{args.prefix}-{args.aggregator}-{args.data}.pkl"
+)
   
   Path(RESULTS_PATH).mkdir(parents=True, exist_ok=True)
 
