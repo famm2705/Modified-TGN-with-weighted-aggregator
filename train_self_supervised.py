@@ -90,15 +90,12 @@ USE_MEMORY = args.use_memory
 MESSAGE_DIM = args.message_dim
 MEMORY_DIM = args.memory_dim
 
-
 BASE_PATH = "/content/drive/MyDrive/tgn_models"
-
 Path(BASE_PATH).mkdir(parents=True, exist_ok=True)
 
-MODEL_SAVE_PATH = f'{BASE_PATH}/{args.prefix}-{args.aggregator}-{args.data}.pth'
+MODEL_SAVE_PATH = f'{BASE_PATH}/tgn_{args.aggregator}_{args.data}.pth'
+get_checkpoint_path = lambda epoch: f'{BASE_PATH}/tgn_{args.aggregator}_{args.data}_{epoch}.pth'
 
-get_checkpoint_path = lambda epoch: \
-    f'{BASE_PATH}/{args.prefix}-{args.aggregator}-{args.data}-{epoch}.pth'
 
 ### set up logger
 logging.basicConfig(level=logging.INFO)
@@ -147,16 +144,10 @@ device = torch.device(device_string)
 mean_time_shift_src, std_time_shift_src, mean_time_shift_dst, std_time_shift_dst = \
   compute_time_statistics(full_data.sources, full_data.destinations, full_data.timestamps)
 
-for i in range(args.n_runs):
-  RESULTS_PATH = "/content/drive/MyDrive/tgn_results"
+RESULTS_PATH = "/content/drive/MyDrive/tgn_results"
+Path(RESULTS_PATH).mkdir(parents=True, exist_ok=True)
 
-  results_path = (
-    f"{RESULTS_PATH}/{args.prefix}-{args.aggregator}-{args.data}_{i}.pkl"
-    if i > 0
-    else f"{RESULTS_PATH}/{args.prefix}-{args.aggregator}-{args.data}.pkl"
-)
-  
-  Path(RESULTS_PATH).mkdir(parents=True, exist_ok=True)
+results_path = f"{RESULTS_PATH}/tgn_{args.aggregator}_{args.data}.pkl"
 
   # Initialize Model
   tgn = TGN(neighbor_finder=train_ngh_finder, node_features=node_features,
