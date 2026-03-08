@@ -3,31 +3,34 @@ import numpy as np
 import glob
 import os
 
-INPUT_FOLDER = "/content/drive/MyDrive/flows"  # change this to your Google Drive path if needed
+# --- CONFIGURATION ---
+INPUT_FOLDER = "/content/drive/MyDrive/flows"  # path to your CICIDS CSV files
 OUTPUT_FOLDER = "data"
 DATASET_NAME = "cicids"
+NODE_FEATURE_DIM = 172  # must match TGN node_dim
+EDGE_FEATURE_FILL = 0.0
 
+# --- LOAD CSV FILES ---
 print("Loading CICIDS flow files...")
-
 files = glob.glob(f"{INPUT_FOLDER}/*.csv")
 dfs = []
 for f in files:
     print("Reading:", f)
     df = pd.read_csv(f, encoding="latin1", low_memory=False)
     dfs.append(df)
-
 df = pd.concat(dfs, ignore_index=True)
 
+# --- CLEAN AND PREPARE DATA ---
 print("Cleaning column names...")
 df.columns = df.columns.str.strip()
 
-print("Converting timestamps...")
+print("Converting timestamps to seconds...")
 df["ts"] = pd.to_datetime(df["Timestamp"], errors="coerce").astype("int64") // 10**9
 
-print("Mapping nodes (IP -> node id)...")
+# --- MAP NODES TO IDs ---
+print("Mapping nodes (IP -> node ID)...")
 node_map = {}
 node_id = 0
-
 def map_node(ip):
     global node_id
     if ip not in node_map:
@@ -38,44 +41,38 @@ def map_node(ip):
 df["u"] = df["Source IP"].apply(map_node)
 df["i"] = df["Destination IP"].apply(map_node)
 
-print("Generating edge index...")
-df["idx"] = np.arange(len(df))
+# --- SORT BY TIMESTAMP & ENSURE STRICTLY INCREASING ---
+print("Sorting by timestamp and fixing duplicates...")
+df = df.sort_values("ts").reset_index(drop=True)
+df["ts"] += np.arange(len(df)) * 1e-9  # enforce strict increasing timestamps
 
-print("Generating labels...")
+# --- EDGE INDEX & LABELS ---
+print("Generating edge index and labels...")
+df["idx"] = np.arange(len(df))
 df["label"] = (df["Label"] != "BENIGN").astype(int)
 
-print("Sorting by timestamp...")
-df = df.sort_values("ts")
-
+# --- EDGE FEATURES ---
 print("Extracting numeric edge features...")
-
 exclude_cols = [
-    "Source IP",
-    "Destination IP",
-    "Timestamp",
-    "Label",
-    "u",
-    "i",
-    "ts",
-    "idx",
-    "label"
+    "Source IP", "Destination IP", "Timestamp", "Label",
+    "u", "i", "ts", "idx", "label"
 ]
-
 feature_cols = [c for c in df.columns if c not in exclude_cols]
 
-# Convert all edge features to float32 to avoid object arrays
-edge_features = df[feature_cols].apply(pd.to_numeric, errors='coerce').fillna(0).values.astype(np.float32)
+edge_features = df[feature_cols].apply(pd.to_numeric, errors='coerce').fillna(EDGE_FEATURE_FILL).values.astype(np.float32)
 
+# --- NODE FEATURES ---
 print("Creating node features...")
 num_nodes = max(df["u"].max(), df["i"].max()) + 1
-node_features = np.random.rand(num_nodes, 172).astype(np.float32)
+node_features = np.random.rand(num_nodes, NODE_FEATURE_DIM).astype(np.float32)
 
-print("Saving outputs...")
+# --- SAVE DATASETS ---
+print("Saving processed dataset...")
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
 graph_df = df[["u", "i", "ts", "idx", "label"]]
 graph_df.to_csv(f"{OUTPUT_FOLDER}/ml_{DATASET_NAME}.csv", index=False)
-np.save(f"{OUTPUT_FOLDER}/ml_{DATASET_NAME}.npy", edge_features)
+np.save(f"{OUTPUT_FOLDER}/ml_{DATASET_NAME}_edge.npy", edge_features)
 np.save(f"{OUTPUT_FOLDER}/ml_{DATASET_NAME}_node.npy", node_features)
 
 print("Done.")
