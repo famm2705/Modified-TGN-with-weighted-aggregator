@@ -13,10 +13,17 @@ parser.add_argument(
     choices=["mean", "last", "weightedmean", "attention"],
     help="Aggregator type"
 )
+parser.add_argument(
+    "--data",
+    type=str,
+    required=True,
+    choices=["wikipedia", "reddit"],
+    help="Dataset name"
+)
 
 args = parser.parse_args()
 
-file_path = f"{BASE_PATH}/tgn_{args.agg}.pkl"
+file_path = f"{BASE_PATH}/tgn_{args.agg}_{args.data}.pkl"
 
 if not Path(file_path).exists():
     raise FileNotFoundError(f"Results file not found: {file_path}")
@@ -45,20 +52,15 @@ total_train_time = np.sum(total_epoch_times) if len(total_epoch_times) else None
 
 print("\n===== TGN Aggregator Results =====")
 print(f"Aggregator: {args.agg}")
+print(f"Dataset: {args.data}")
 print("----------------------------------")
-
 print(f"Best Validation AP: {best_val_ap:.4f}")
 print(f"Best Validation AUC: {best_val_auc:.4f}")
-
 print(f"Test AP: {test_ap:.4f}")
 print(f"Test AUC: {test_auc:.4f}")
-
 print(f"New Node Test AP: {new_node_test_ap:.4f}")
 print(f"New Node Test AUC: {new_node_test_auc:.4f}")
-
 print("----------------------------------")
-
 print(f"Average Epoch Time: {avg_epoch_time:.2f} s")
 print(f"Total Training Time: {total_train_time:.2f} s")
-
 print("==================================\n")
