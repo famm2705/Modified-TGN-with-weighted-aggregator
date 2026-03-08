@@ -18,7 +18,7 @@ def load_cicids(input_folder):
     return pd.concat(dfs, ignore_index=True)
 
 def preprocess_cicids():
-    """Main preprocessing function matching the data_processing.py expectations"""
+    """Main preprocessing function"""
     print("="*60)
     print("CICIDS Preprocessor for TGN")
     print("="*60)
@@ -40,10 +40,10 @@ def preprocess_cicids():
     # Sort by timestamp
     df = df.sort_values("ts").reset_index(drop=True)
     
-    # Create node mappings (sequential from 0, but will be +1 in data_processing)
+    # Create node mappings (starting from 0 for the CSV)
     print("\n3. Mapping IPs to node IDs...")
     all_ips = pd.concat([df["Source IP"], df["Destination IP"]]).unique()
-    node_map = {ip: idx for idx, ip in enumerate(all_ips)}  # Start from 0
+    node_map = {ip: idx for idx, ip in enumerate(all_ips)}  # Start from 0 for CSV
     print(f"   Total unique nodes: {len(node_map)}")
     
     df["u"] = df["Source IP"].map(node_map)
@@ -66,7 +66,7 @@ def preprocess_cicids():
     edge_features = df[feature_cols].apply(pd.to_numeric, errors='coerce').fillna(0).values
     edge_features = edge_features.astype(np.float32)
     
-    # Normalize features to [0,1] range
+    # Normalize features
     if edge_features.shape[1] > 0:
         print("   Normalizing features...")
         min_vals = edge_features.min(axis=0)
@@ -77,99 +77,107 @@ def preprocess_cicids():
     
     print(f"   Edge features shape: {edge_features.shape}")
     
-    # Create node features (random, matching the expected dimension)
+    # Create node features (random)
     print("\n5. Creating node features...")
     num_nodes = len(node_map)
-    # Node features dimension should match what TGN expects (172)
-    node_features = np.random.randn(num_nodes, 172).astype(np.float32)
+    # Add 1 for node 0 (dummy node that TGN expects)
+    node_features = np.random.randn(num_nodes + 1, 172).astype(np.float32)
+    node_features[0] = 0  # Zero out the dummy node
     print(f"   Node features shape: {node_features.shape}")
+    print(f"   Note: First row (index 0) is dummy node")
     
-    # Final dataframe with required columns
+    # Final dataframe
     final_df = df[["u", "i", "ts", "label", "idx"]].copy()
     
+    # CRITICAL FIX: Ensure timestamps are strictly increasing PER NODE
+    print("\n6. Ensuring temporal ordering per node...")
+    
+    # Group by source node and fix timestamps
+    for node_id in final_df['u'].unique():
+        mask = final_df['u'] == node_id
+        node_indices = final_df.index[mask].tolist()
+        
+        if len(node_indices) > 1:
+            # Get timestamps for this node
+            node_ts = final_df.loc[node_indices, 'ts'].values
+            
+            # Fix any non-increasing timestamps
+            modified = False
+            for j in range(1, len(node_ts)):
+                if node_ts[j] <= node_ts[j-1]:
+                    node_ts[j] = node_ts[j-1] + 1e-6
+                    modified = True
+            
+            if modified:
+                final_df.loc[node_indices, 'ts'] = node_ts
+    
+    # Final sort by timestamp
+    final_df = final_df.sort_values('ts').reset_index(drop=True)
+    final_df['idx'] = np.arange(len(final_df))
+    
     # Verify format
-    print("\n6. Verifying output format...")
+    print("\n7. Verifying output format...")
     print(f"   Node IDs: min={final_df['u'].min()}, max={final_df['u'].max()}")
     print(f"   Edge indices: min={final_df['idx'].min()}, max={final_df['idx'].max()}")
-    print(f"   Labels distribution: {final_df['label'].value_counts().to_dict()}")
-    print(f"   Timestamp range: {final_df['ts'].min()} to {final_df['ts'].max()}")
+    print(f"   Labels: {final_df['label'].value_counts().to_dict()}")
     
-    # Quick check for any timestamp ordering issues
-    print("\n7. Checking temporal ordering...")
-    df_sorted = final_df.sort_values(['ts', 'idx'])
-    is_monotonic = (df_sorted['ts'].diff().iloc[1:] >= 0).all()
-    if is_monotonic:
-        print("   ✅ Timestamps are monotonically increasing")
+    # Check for any timestamp issues
+    ts_diffs = final_df['ts'].diff().iloc[1:]
+    if (ts_diffs < 0).any():
+        print("   ⚠️  Warning: Still have decreasing timestamps")
     else:
-        print("   ⚠️  Warning: Some timestamps are out of order")
-        # Force final sort
-        final_df = final_df.sort_values(['ts', 'idx']).reset_index(drop=True)
-        final_df['idx'] = np.arange(len(final_df))
-        print("   ✅ Re-sorted by timestamp")
+        print("   ✅ All timestamps are increasing")
     
     return final_df, edge_features, node_features
 
 def save_outputs(df, edge_features, node_features):
-    """Save in the format expected by data_processing.py"""
+    """Save files in the format expected by the training script"""
     print("\n8. Saving files...")
     
     Path(OUTPUT_FOLDER).mkdir(parents=True, exist_ok=True)
     
-    # Save main data file (this is what data_processing.py reads)
-    df.to_csv(f"{OUTPUT_FOLDER}/ml_{DATASET_NAME}.csv", index=False)
-    print(f"   ✅ Saved: ml_{DATASET_NAME}.csv")
+    # Save main data file
+    csv_path = f"{OUTPUT_FOLDER}/ml_{DATASET_NAME}.csv"
+    df.to_csv(csv_path, index=False)
+    print(f"   ✅ Saved: {csv_path}")
     print(f"      Shape: {df.shape}")
-    print(f"      Columns: {list(df.columns)}")
     
-    # Save edge features (ml_{dataset}.npy)
-    np.save(f"{OUTPUT_FOLDER}/ml_{DATASET_NAME}.npy", edge_features)
-    print(f"   ✅ Saved: ml_{DATASET_NAME}.npy")
+    # Save edge features
+    edge_path = f"{OUTPUT_FOLDER}/ml_{DATASET_NAME}.npy"
+    np.save(edge_path, edge_features)
+    print(f"   ✅ Saved: {edge_path}")
     print(f"      Shape: {edge_features.shape}")
     
-    # Save node features (ml_{dataset}_node.npy)
-    np.save(f"{OUTPUT_FOLDER}/ml_{DATASET_NAME}_node.npy", node_features)
-    print(f"   ✅ Saved: ml_{DATASET_NAME}_node.npy")
+    # Save node features
+    node_path = f"{OUTPUT_FOLDER}/ml_{DATASET_NAME}_node.npy"
+    np.save(node_path, node_features)
+    print(f"   ✅ Saved: {node_path}")
     print(f"      Shape: {node_features.shape}")
     
-    # Print summary
     print("\n" + "="*60)
     print("PREPROCESSING COMPLETE")
     print("="*60)
     print(f"Dataset: {DATASET_NAME}")
-    print(f"Number of edges: {len(df)}")
-    print(f"Number of nodes: {len(node_features)}")
-    print(f"Edge features dimension: {edge_features.shape[1]}")
-    print(f"Node features dimension: {node_features.shape[1]}")
-    print("\nFiles created:")
-    print(f"  - data/ml_{DATASET_NAME}.csv")
-    print(f"  - data/ml_{DATASET_NAME}.npy")
-    print(f"  - data/ml_{DATASET_NAME}_node.npy")
+    print(f"Edges: {len(df)}")
+    print(f"Nodes in CSV: {df['u'].nunique()} (0 to {df['u'].max()})")
+    print(f"Node features: {node_features.shape[0]} total (including dummy node 0)")
+    print(f"Edge features dim: {edge_features.shape[1]}")
     print("="*60)
-    
-    # Verify files can be read by data_processing.py
-    print("\n9. Verifying files can be loaded...")
-    try:
-        test_df = pd.read_csv(f"{OUTPUT_FOLDER}/ml_{DATASET_NAME}.csv")
-        test_edge = np.load(f"{OUTPUT_FOLDER}/ml_{DATASET_NAME}.npy")
-        test_node = np.load(f"{OUTPUT_FOLDER}/ml_{DATASET_NAME}_node.npy")
-        print("   ✅ All files loaded successfully")
-        print(f"   CSV columns: {list(test_df.columns)}")
-        print(f"   Edge features: {test_edge.shape}")
-        print(f"   Node features: {test_node.shape}")
-    except Exception as e:
-        print(f"   ❌ Error loading files: {e}")
 
 if __name__ == "__main__":
     try:
-        # Run preprocessing
         df, edge_features, node_features = preprocess_cicids()
         save_outputs(df, edge_features, node_features)
         
         print("\n" + "="*60)
         print("NEXT STEPS:")
         print("="*60)
-        print("Run training with:")
-        print(f"python train_self_supervised.py --data {DATASET_NAME} --bs 200 --n_epoch 50 --use_memory --memory_dim 172 --prefix tgn --gpu 0")
+        print("1. First, verify the data split in data_processing.py:")
+        print("   The split uses 70th and 85th percentiles of timestamps")
+        print("\n2. Run training with:")
+        print(f"   python train_self_supervised.py --data {DATASET_NAME} \\")
+        print(f"     --bs 200 --n_epoch 50 --use_memory \\")
+        print(f"     --memory_dim 172 --prefix tgn --gpu 0")
         print("="*60)
         
     except Exception as e:
