@@ -23,10 +23,17 @@ def load_cicids(input_folder):
 def preprocess(df):
     # Clean column names
     df.columns = df.columns.str.strip()
-
+    
     # Convert timestamp to seconds
     df["ts"] = pd.to_datetime(df["Timestamp"], errors="coerce").astype(np.int64) // 10**9
-
+    
+    # Remove any rows with invalid timestamps
+    df = df.dropna(subset=["ts"])
+    print(f"After dropping invalid timestamps: {len(df)} rows")
+    
+    # Sort by timestamp first
+    df = df.sort_values("ts").reset_index(drop=True)
+    
     # Map IP addresses to contiguous node IDs
     node_map = {}
     node_id = 0
@@ -36,60 +43,142 @@ def preprocess(df):
             node_map[ip] = node_id
             node_id += 1
         return node_map[ip]
-
+    
     df["u"] = df["Source IP"].apply(map_node)
     df["i"] = df["Destination IP"].apply(map_node)
-
+    
     # Generate edge index and labels
     df["idx"] = np.arange(len(df))
     df["label"] = (df["Label"] != "BENIGN").astype(int)
-
-    # Sort globally by timestamp
-    df = df.sort_values("ts").reset_index(drop=True)
-
-    # Enforce strictly increasing timestamps per node to avoid memory update errors
+    
+    print(f"Total nodes: {node_id}")
+    print(f"Total edges: {len(df)}")
+    
+    # CRITICAL FIX: Enforce strictly increasing timestamps per node
+    print("Enforcing strictly increasing timestamps per node...")
+    
+    # Create a copy to avoid warnings
+    df = df.copy()
+    
+    # Process source nodes (u)
+    print("Processing source nodes...")
     for node_col in ["u", "i"]:
-        node_groups = df.groupby(node_col)
-        for node_id, group in node_groups:
-            ts = group["ts"].values
-            for j in range(1, len(ts)):
-                if ts[j] <= ts[j-1]:
-                    ts[j] = ts[j-1] + EPSILON
-            df.loc[group.index, "ts"] = ts
-
+        # Sort by node and timestamp
+        df_sorted = df.sort_values([node_col, "ts"])
+        
+        # Process each node's timestamps
+        nodes_processed = 0
+        for node_id in df[node_col].unique():
+            mask = df_sorted[node_col] == node_id
+            node_indices = df_sorted.index[mask]
+            
+            if len(node_indices) > 1:
+                ts_values = df_sorted.loc[node_indices, "ts"].values.copy()
+                
+                # Fix any non-increasing timestamps
+                fixed = False
+                for j in range(1, len(ts_values)):
+                    if ts_values[j] <= ts_values[j-1]:
+                        ts_values[j] = ts_values[j-1] + EPSILON
+                        fixed = True
+                
+                if fixed:
+                    df.loc[node_indices, "ts"] = ts_values
+            
+            nodes_processed += 1
+            if nodes_processed % 1000 == 0:
+                print(f"  Processed {nodes_processed} nodes...")
+    
+    # Final global sort to ensure consistent ordering
+    print("Performing final sort...")
+    df = df.sort_values(["ts", "idx"]).reset_index(drop=True)
+    df["idx"] = np.arange(len(df))  # Reassign indices after sorting
+    
     # Extract numeric edge features
     exclude_cols = ["Source IP", "Destination IP", "Timestamp", "Label", "u", "i", "ts", "idx", "label"]
     feature_cols = [c for c in df.columns if c not in exclude_cols]
+    print(f"Edge feature columns: {len(feature_cols)}")
+    
+    # Convert to numeric and handle missing values
     edge_features = df[feature_cols].apply(pd.to_numeric, errors='coerce').fillna(0).values.astype(np.float32)
-
+    
     # Normalize edge features (min-max to [0,1])
-    min_vals = edge_features.min(axis=0)
-    max_vals = edge_features.max(axis=0)
-    denom = (max_vals - min_vals)
-    denom[denom == 0] = 1
-    edge_features = (edge_features - min_vals) / denom
-
-    # Create random node features
+    if edge_features.shape[1] > 0:
+        min_vals = edge_features.min(axis=0)
+        max_vals = edge_features.max(axis=0)
+        denom = (max_vals - min_vals)
+        denom[denom == 0] = 1
+        edge_features = (edge_features - min_vals) / denom
+    
+    # Create random node features (as in the original TGN code)
     num_nodes = max(df["u"].max(), df["i"].max()) + 1
     node_features = np.random.rand(num_nodes, 172).astype(np.float32)
-
+    
+    print(f"Final edge features shape: {edge_features.shape}")
+    print(f"Final node features shape: {node_features.shape}")
+    
     return df, edge_features, node_features
 
 def save_outputs(df, edge_features, node_features, dataset_name):
     Path(OUTPUT_FOLDER).mkdir(parents=True, exist_ok=True)
-    graph_df = df[["u", "i", "ts", "idx", "label"]]
-    graph_df.to_csv(f"{OUTPUT_FOLDER}/ml_{dataset_name}.csv", index=False)
+    
+    # Save in the format expected by the TGN data loader
+    graph_df = df[["u", "i", "ts", "label", "idx"]]
+    output_path = f"{OUTPUT_FOLDER}/ml_{dataset_name}.csv"
+    graph_df.to_csv(output_path, index=False)
     np.save(f"{OUTPUT_FOLDER}/ml_{dataset_name}_edge.npy", edge_features)
     np.save(f"{OUTPUT_FOLDER}/ml_{dataset_name}_node.npy", node_features)
-    print("Saved processed data to:", OUTPUT_FOLDER)
-    print("Edges:", len(graph_df))
-    print("Nodes:", node_features.shape[0])
+    
+    print("\n" + "="*50)
+    print("SAVED FILES:")
+    print("="*50)
+    print(f"1. {output_path}")
+    print(f"   - Edges: {len(graph_df)}")
+    print(f"   - Columns: {list(graph_df.columns)}")
+    print(f"2. {OUTPUT_FOLDER}/ml_{dataset_name}_edge.npy")
+    print(f"   - Shape: {edge_features.shape}")
+    print(f"3. {OUTPUT_FOLDER}/ml_{dataset_name}_node.npy")
+    print(f"   - Shape: {node_features.shape}")
+    print("="*50)
+    
+    # Verify temporal ordering
+    print("\nVerifying temporal ordering...")
+    df_check = pd.read_csv(output_path)
+    
+    # Quick check for any timestamp issues
+    print(f"Timestamp range: {df_check['ts'].min()} to {df_check['ts'].max()}")
+    print(f"Timestamp differences: min={df_check['ts'].diff().min():.2f}, max={df_check['ts'].diff().max():.2f}")
+    
+    # Check a few random nodes for monotonic timestamps
+    test_nodes = np.random.choice(df_check["u"].unique(), min(5, len(df_check["u"].unique())), replace=False)
+    all_good = True
+    
+    for node_id in test_nodes:
+        node_edges = df_check[df_check["u"] == node_id].sort_values("ts")
+        ts_diff = node_edges["ts"].diff().iloc[1:]
+        if len(ts_diff) > 0 and (ts_diff <= 0).any():
+            print(f"⚠️  WARNING: Node {node_id} has {sum(ts_diff <= 0)} non-increasing timestamps")
+            all_good = False
+    
+    if all_good:
+        print("✅ All checked nodes have strictly increasing timestamps")
+    
+    print("\n" + "="*50)
+    print("DATA PREPROCESSING COMPLETE")
+    print("="*50)
 
 if __name__ == "__main__":
-    print("Loading CICIDS flow files...")
+    print("="*50)
+    print("CICIDS TGN PREPROCESSOR")
+    print("="*50)
+    
+    print("\nLoading CICIDS flow files...")
     df = load_cicids(INPUT_FOLDER)
-    print("Preprocessing...")
+    print(f"Loaded {len(df)} total rows")
+    
+    print("\nPreprocessing...")
     df, edge_features, node_features = preprocess(df)
-    print("Saving outputs...")
+    
+    print("\nSaving outputs...")
     save_outputs(df, edge_features, node_features, DATASET_NAME)
-    print("Done.")
+    print("\nDone.")
