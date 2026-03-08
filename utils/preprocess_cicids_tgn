@@ -1,138 +1,220 @@
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import LabelEncoder, StandardScaler
-import os
+import random
+from datetime import datetime
 
-def preprocess_cicids2017(input_csv_path, output_dir='./data/', dataset_name='cicids'):
+class Data:
+    def __init__(self, sources, destinations, timestamps, edge_idxs, labels):
+        self.sources = sources
+        self.destinations = destinations
+        self.timestamps = timestamps
+        self.edge_idxs = edge_idxs
+        self.labels = labels
+        self.n_interactions = len(sources)
+        self.unique_nodes = set(sources) | set(destinations)
+        self.n_unique_nodes = len(self.unique_nodes)
+
+
+def get_cicids_data(dataset_name, different_new_nodes_between_val_and_test=False, 
+                   randomize_features=False):
     """
-    Preprocess CICIDS2017 dataset for TGN
-    
-    Args:
-        input_csv_path: Path to the raw CICIDS2017 CSV file
-        output_dir: Directory to save processed files
-        dataset_name: Name to use for the output files
+    Preprocess CICIDS2017 data for TGN
     """
     
-    # Create output directory if it doesn't exist
-    os.makedirs(output_dir, exist_ok=True)
+    # Load the CSV file
+    file_path = f'./content/drive/MyDrive/cicidsdata/cicids.csv'  # Adjust path as needed
+    print(f"Loading data from {file_path}...")
+    df = pd.read_csv(file_path)
     
-    # Read the CSV file
-    print("Loading CICIDS2017 data...")
-    df = pd.read_csv(input_csv_path)
+    # Clean column names (remove spaces)
+    df.columns = df.columns.str.strip()
     
-    # CICIDS2017 specific preprocessing
-    # Handle infinite values and NaN
-    df = df.replace([np.inf, -np.inf], np.nan)
-    df = df.dropna()
+    # Parse timestamps - handle the format in your CSV
+    print("Parsing timestamps...")
+    df['datetime'] = pd.to_datetime(df['Timestamp'], format='%d/%m/%Y %H:%M')
     
-    # Identify features (all columns except label/timestamp related ones)
-    # Adjust these column names based on your actual CICIDS2017 column names
-    label_column = 'Label'  # Change this to your actual label column name
-    timestamp_column = 'Timestamp'  # Change this to your actual timestamp column
+    # Convert to seconds since epoch
+    df['timestamp_seconds'] = df['datetime'].astype('int64') // 10**9
     
-    # Get feature columns (all except label and timestamp)
-    feature_columns = [col for col in df.columns if col not in [label_column, timestamp_column]]
+    # CRITICAL: Sort by timestamp FIRST
+    print("Sorting by timestamp...")
+    df = df.sort_values('timestamp_seconds').reset_index(drop=True)
     
-    # Normalize features
-    scaler = StandardScaler()
-    features_scaled = scaler.fit_transform(df[feature_columns])
+    # Create node IDs from IP addresses
+    print("Creating node mappings...")
+    # Get unique IPs from both source and destination
+    source_ips = df['Source IP'].unique()
+    dest_ips = df['Destination IP'].unique()
+    all_ips = np.unique(np.concatenate([source_ips, dest_ips]))
+    ip_to_id = {ip: idx for idx, ip in enumerate(all_ips)}
     
-    # Convert timestamp to numeric (if it's not already)
-    # You might need to customize this based on your timestamp format
-    if timestamp_column in df.columns:
-        # Assuming timestamp is already numeric, if not, convert it
-        if df[timestamp_column].dtype == 'object':
-            # Try to parse datetime
-            timestamps = pd.to_datetime(df[timestamp_column]).astype(int) // 10**9  # Convert to Unix timestamp
-        else:
-            timestamps = df[timestamp_column].values
-    else:
-        # If no timestamp column, create sequential timestamps
-        timestamps = np.arange(len(df))
+    # Map IPs to node IDs
+    sources = df['Source IP'].map(ip_to_id).values
+    destinations = df['Destination IP'].map(ip_to_id).values
     
-    # Encode labels as binary (assuming binary classification)
-    # Adjust this based on your label format
-    le = LabelEncoder()
-    labels = le.fit_transform(df[label_column])
-    
-    # For TGN, we need to create source and destination nodes
-    # In network traffic, we can use IP addresses or create synthetic node pairs
-    # Here's one approach: treat each flow as an interaction between source IP and destination IP
-    
-    # Check if we have IP columns, otherwise create synthetic node IDs
-    if 'Source IP' in df.columns and 'Destination IP' in df.columns:
-        # Encode IPs as integers
-        source_ips = LabelEncoder().fit_transform(df['Source IP'])
-        dest_ips = LabelEncoder().fit_transform(df['Destination IP'])
-    else:
-        # Create synthetic node pairs (each flow is between a unique source-destination pair)
-        # This is a simplification - you might want a different approach
-        n_flows = len(df)
-        source_ips = np.arange(n_flows)  # Each flow has a unique source
-        dest_ips = (np.arange(n_flows) + 1) % n_flows  # Each flow has a unique destination
-    
-    # Create edge indices (just sequential)
+    # Create edge indices
     edge_idxs = np.arange(len(df))
     
-    # Prepare the graph dataframe
-    graph_df = pd.DataFrame({
-        'u': source_ips,
-        'i': dest_ips,
-        'ts': timestamps,
-        'idx': edge_idxs,
-        'label': labels
-    })
+    # Create labels (1 for attack, 0 for BENIGN)
+    labels = (df['Label'] != 'BENIGN').astype(int).values
     
-    # Sort by timestamp
-    graph_df = graph_df.sort_values('ts').reset_index(drop=True)
+    # Timestamps
+    timestamps = df['timestamp_seconds'].values
     
-    # Save the graph dataframe
-    output_csv_path = os.path.join(output_dir, f'ml_{dataset_name}.csv')
-    graph_df.to_csv(output_csv_path, index=False)
-    print(f"Saved graph data to {output_csv_path}")
-    
-    # Create edge features (use the normalized flow features)
-    # Make sure to reorder features to match the sorted graph_df
-    feature_order = graph_df['idx'].values
-    edge_features = features_scaled[feature_order]
-    
-    # Save edge features
-    edge_features_path = os.path.join(output_dir, f'ml_{dataset_name}.npy')
-    np.save(edge_features_path, edge_features)
-    print(f"Saved edge features to {edge_features_path}")
+    # CRITICAL: For each node, ensure timestamps are strictly increasing
+    print("Validating timestamp ordering...")
+    node_last_time = {}
+    for i in range(len(sources)):
+        src = sources[i]
+        dst = destinations[i]
+        ts = timestamps[i]
+        
+        # Check source node
+        if src in node_last_time:
+            if ts < node_last_time[src]:
+                print(f"Warning: Source node {src} has decreasing timestamp at index {i}")
+                # Fix by making timestamp slightly larger
+                timestamps[i] = node_last_time[src] + 1
+        node_last_time[src] = timestamps[i]
+        
+        # Check destination node
+        if dst in node_last_time:
+            if ts < node_last_time[dst]:
+                print(f"Warning: Destination node {dst} has decreasing timestamp at index {i}")
+                timestamps[i] = max(timestamps[i], node_last_time[dst] + 1)
+        node_last_time[dst] = timestamps[i]
     
     # Create node features
-    # Get unique nodes (both sources and destinations)
-    unique_nodes = sorted(set(graph_df['u'].unique()) | set(graph_df['i'].unique()))
-    n_unique_nodes = len(unique_nodes)
-    n_features = edge_features.shape[1]  # Use same dimension as edge features
+    print("Creating node features...")
+    n_nodes = len(all_ips)
+    node_features = np.random.randn(n_nodes, 100).astype(np.float32)  # Placeholder
     
-    # Create node features (you might want to customize this)
-    # Here we're creating random features as a placeholder
-    # In practice, you might want to aggregate flow features per node
-    np.random.seed(42)
-    node_features = np.random.randn(n_unique_nodes, n_features)
+    # Create edge features from flow statistics
+    print("Creating edge features...")
+    # Select numerical columns for edge features
+    feature_cols = [
+        'Flow Duration', 'Total Fwd Packets', 'Total Backward Packets',
+        'Total Length of Fwd Packets', 'Total Length of Bwd Packets',
+        'Fwd Packet Length Max', 'Fwd Packet Length Min', 'Fwd Packet Length Mean',
+        'Bwd Packet Length Max', 'Bwd Packet Length Min', 'Bwd Packet Length Mean',
+        'Flow Bytes/s', 'Flow Packets/s', 'Flow IAT Mean', 'Flow IAT Std',
+        'Fwd IAT Total', 'Fwd IAT Mean', 'Bwd IAT Total', 'Bwd IAT Mean'
+    ]
     
-    # Save node features
-    node_features_path = os.path.join(output_dir, f'ml_{dataset_name}_node.npy')
-    np.save(node_features_path, node_features)
-    print(f"Saved node features to {node_features_path}")
+    # Get available columns
+    available_cols = [col for col in feature_cols if col in df.columns]
+    edge_features = df[available_cols].values.astype(np.float32)
+    
+    # Handle NaN and inf
+    edge_features = np.nan_to_num(edge_features, nan=0.0, posinf=0.0, neginf=0.0)
+    
+    # Normalize edge features
+    mean = np.mean(edge_features, axis=0, keepdims=True)
+    std = np.std(edge_features, axis=0, keepdims=True)
+    std[std == 0] = 1
+    edge_features = (edge_features - mean) / std
+    
+    # Create full data object
+    full_data = Data(sources, destinations, timestamps, edge_idxs, labels)
+    
+    # Split by time
+    val_time, test_time = list(np.quantile(timestamps, [0.70, 0.85]))
+    
+    # CRITICAL: Create masks based on time
+    train_mask = timestamps <= val_time
+    val_mask = np.logical_and(timestamps > val_time, timestamps <= test_time)
+    test_mask = timestamps > test_time
+    
+    # Create train data
+    train_data = Data(
+        sources[train_mask], destinations[train_mask], 
+        timestamps[train_mask], edge_idxs[train_mask], labels[train_mask]
+    )
+    
+    # For inductive learning (new nodes)
+    random.seed(2020)
+    
+    # Nodes that appear in test set
+    test_node_set = set(sources[timestamps > val_time]) | set(destinations[timestamps > val_time])
+    
+    # Sample 10% of nodes for inductive testing
+    n_total_nodes = len(all_ips)
+    new_test_node_set = set(random.sample(list(test_node_set), int(0.1 * n_total_nodes)))
+    
+    # Create masks for edges with new nodes
+    new_test_source_mask = np.array([s in new_test_node_set for s in sources])
+    new_test_destination_mask = np.array([d in new_test_node_set for d in destinations])
+    
+    # Observed edges mask (edges without new nodes)
+    observed_edges_mask = np.logical_and(~new_test_source_mask, ~new_test_destination_mask)
+    
+    # Update train mask to exclude edges with new nodes
+    train_mask = np.logical_and(timestamps <= val_time, observed_edges_mask)
+    train_data = Data(
+        sources[train_mask], destinations[train_mask], 
+        timestamps[train_mask], edge_idxs[train_mask], labels[train_mask]
+    )
+    
+    # Validation and test data (all edges)
+    val_data = Data(
+        sources[val_mask], destinations[val_mask], 
+        timestamps[val_mask], edge_idxs[val_mask], labels[val_mask]
+    )
+    
+    test_data = Data(
+        sources[test_mask], destinations[test_mask], 
+        timestamps[test_mask], edge_idxs[test_mask], labels[test_mask]
+    )
+    
+    # New node validation and test data
+    if different_new_nodes_between_val_and_test:
+        n_new_nodes = len(new_test_node_set) // 2
+        val_new_node_set = set(list(new_test_node_set)[:n_new_nodes])
+        test_new_node_set = set(list(new_test_node_set)[n_new_nodes:])
+        
+        new_node_val_mask = np.array([
+            (s in val_new_node_set or d in val_new_node_set) 
+            for s, d in zip(sources, destinations)
+        ])
+        new_node_test_mask = np.array([
+            (s in test_new_node_set or d in test_new_node_set) 
+            for s, d in zip(sources, destinations)
+        ])
+    else:
+        new_node_val_mask = np.array([
+            (s in new_test_node_set or d in new_test_node_set) 
+            for s, d in zip(sources, destinations)
+        ])
+        new_node_test_mask = new_node_val_mask
+    
+    new_node_val_mask = np.logical_and(val_mask, new_node_val_mask)
+    new_node_test_mask = np.logical_and(test_mask, new_node_test_mask)
+    
+    new_node_val_data = Data(
+        sources[new_node_val_mask], destinations[new_node_val_mask],
+        timestamps[new_node_val_mask], edge_idxs[new_node_val_mask], 
+        labels[new_node_val_mask]
+    )
+    
+    new_node_test_data = Data(
+        sources[new_node_test_mask], destinations[new_node_test_mask],
+        timestamps[new_node_test_mask], edge_idxs[new_node_test_mask], 
+        labels[new_node_test_mask]
+    )
     
     # Print statistics
-    print(f"\nDataset Statistics:")
-    print(f"Total interactions: {len(graph_df)}")
-    print(f"Unique nodes: {n_unique_nodes}")
-    print(f"Feature dimension: {n_features}")
-    print(f"Label distribution: {np.bincount(labels)}")
+    print("\n" + "="*50)
+    print("CICIDS2017 Dataset Statistics:")
+    print("="*50)
+    print(f"Total interactions: {full_data.n_interactions}")
+    print(f"Total unique nodes: {full_data.n_unique_nodes}")
+    print(f"\nTraining set: {train_data.n_interactions} interactions, {train_data.n_unique_nodes} nodes")
+    print(f"Validation set: {val_data.n_interactions} interactions, {val_data.n_unique_nodes} nodes")
+    print(f"Test set: {test_data.n_interactions} interactions, {test_data.n_unique_nodes} nodes")
+    print(f"New node validation: {new_node_val_data.n_interactions} interactions, {new_node_val_data.n_unique_nodes} nodes")
+    print(f"New node test: {new_node_test_data.n_interactions} interactions, {new_node_test_data.n_unique_nodes} nodes")
+    print(f"New nodes for inductive testing: {len(new_test_node_set)}")
+    print("="*50)
     
-    return graph_df, edge_features, node_features
-
-# Example usage
-if __name__ == "__main__":
-    # Replace with your actual CICIDS2017 file path
-    input_file = "path/to/your/cicids2017.csv"
-    graph_df, edge_features, node_features = preprocess_cicids2017(
-        input_file, 
-        output_dir='./data/', 
-        dataset_name='cicids'
-    )
+    return node_features, edge_features, full_data, train_data, val_data, test_data, \
+           new_node_val_data, new_node_test_data
