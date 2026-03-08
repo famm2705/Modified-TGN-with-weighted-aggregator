@@ -420,7 +420,7 @@ def get_cicids_data(dataset_name, different_new_nodes_between_val_and_test=False
 if __name__ == "__main__":
     # Example usage
     preprocessor = CICIDSTGNPreprocessor(
-        input_csv_path='/content/drive/MyDrive/cicidsdata/cicids2017.csv',  # Change this to your file path
+        input_csv_path='/content/drive/MyDrive/cicidsdata/cicids.csv',  # Change this to your file path
         output_dir='/content/data'
     )
     preprocessor.preprocess()
