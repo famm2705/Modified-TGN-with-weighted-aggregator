@@ -3,14 +3,13 @@ import numpy as np
 import glob
 import os
 
-INPUT_FOLDER = "/content/drive/MyDrive/flows"
+INPUT_FOLDER = "flows"  # change this to your Google Drive path if needed
 OUTPUT_FOLDER = "data"
 DATASET_NAME = "cicids"
 
 print("Loading CICIDS flow files...")
 
 files = glob.glob(f"{INPUT_FOLDER}/*.csv")
-
 dfs = []
 for f in files:
     print("Reading:", f)
@@ -26,7 +25,6 @@ print("Converting timestamps...")
 df["ts"] = pd.to_datetime(df["Timestamp"], errors="coerce").astype("int64") // 10**9
 
 print("Mapping nodes (IP -> node id)...")
-
 node_map = {}
 node_id = 0
 
@@ -49,7 +47,7 @@ df["label"] = (df["Label"] != "BENIGN").astype(int)
 print("Sorting by timestamp...")
 df = df.sort_values("ts")
 
-print("Extracting edge features...")
+print("Extracting numeric edge features...")
 
 exclude_cols = [
     "Source IP",
@@ -65,19 +63,17 @@ exclude_cols = [
 
 feature_cols = [c for c in df.columns if c not in exclude_cols]
 
-edge_features = df[feature_cols].fillna(0).values.astype(np.float32)
+# Convert all edge features to float32 to avoid object arrays
+edge_features = df[feature_cols].apply(pd.to_numeric, errors='coerce').fillna(0).values.astype(np.float32)
 
 print("Creating node features...")
-
 num_nodes = max(df["u"].max(), df["i"].max()) + 1
-node_features = np.random.rand(num_nodes, 172)
+node_features = np.random.rand(num_nodes, 172).astype(np.float32)
 
 print("Saving outputs...")
-
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
 graph_df = df[["u", "i", "ts", "idx", "label"]]
-
 graph_df.to_csv(f"{OUTPUT_FOLDER}/ml_{DATASET_NAME}.csv", index=False)
 np.save(f"{OUTPUT_FOLDER}/ml_{DATASET_NAME}.npy", edge_features)
 np.save(f"{OUTPUT_FOLDER}/ml_{DATASET_NAME}_node.npy", node_features)
