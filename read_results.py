@@ -23,7 +23,7 @@ parser.add_argument(
 
 args = parser.parse_args()
 
-file_path = f"{BASE_PATH}/tgn_{args.agg}_{args.data}.pkl"
+file_path = f"{BASE_PATH}/tgn_{args.data}_{args.agg}.pkl"
 
 if not Path(file_path).exists():
     raise FileNotFoundError(f"Results file not found: {file_path}")
