@@ -1,153 +1,138 @@
-import pandas as pd
 import numpy as np
-import glob
-from pathlib import Path
+import pandas as pd
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+import os
 
-INPUT_FOLDER = "/content/drive/MyDrive/flows"
-OUTPUT_FOLDER = "data"
-DATASET_NAME = "cicids"
-
-def load_cicids(input_folder):
-    """Load all CSV files from the input folder"""
-    files = glob.glob(f"{input_folder}/*.csv")
-    dfs = []
-    for f in files:
-        print("Reading:", f)
-        df = pd.read_csv(f, encoding="latin1", low_memory=False)
-        dfs.append(df)
-    return pd.concat(dfs, ignore_index=True)
-
-def preprocess_cicids():
-    """EXACT replica of preprocess_data.py workflow"""
-    print("="*60)
-    print("CICIDS Preprocessor for TGN")
-    print("="*60)
+def preprocess_cicids2017(input_csv_path, output_dir='./data/', dataset_name='cicids'):
+    """
+    Preprocess CICIDS2017 dataset for TGN
     
-    # STEP 1: Load and prepare data (like reading the raw CSV in preprocess_data.py)
-    print("\n1. Loading and preparing data...")
-    df = load_cicids(INPUT_FOLDER)
-    df.columns = df.columns.str.strip()
+    Args:
+        input_csv_path: Path to the raw CICIDS2017 CSV file
+        output_dir: Directory to save processed files
+        dataset_name: Name to use for the output files
+    """
     
-    # Convert timestamps
-    df["ts"] = pd.to_datetime(df["Timestamp"], errors="coerce").astype(np.int64) // 10**9
-    df = df.dropna(subset=["ts"])
-    df = df.sort_values("ts").reset_index(drop=True)
+    # Create output directory if it doesn't exist
+    os.makedirs(output_dir, exist_ok=True)
     
-    # Create initial node mappings (0-based, continuous)
-    all_ips = pd.concat([df["Source IP"], df["Destination IP"]]).unique()
-    node_map = {ip: idx for idx, ip in enumerate(all_ips)}
+    # Read the CSV file
+    print("Loading CICIDS2017 data...")
+    df = pd.read_csv(input_csv_path)
     
-    df["u"] = df["Source IP"].map(node_map)
-    df["i"] = df["Destination IP"].map(node_map)
-    df["label"] = (df["Label"] != "BENIGN").astype(int)
-    df["idx"] = np.arange(len(df))
+    # CICIDS2017 specific preprocessing
+    # Handle infinite values and NaN
+    df = df.replace([np.inf, -np.inf], np.nan)
+    df = df.dropna()
     
-    # Extract features
-    exclude_cols = ["Source IP", "Destination IP", "Timestamp", "Label", "u", "i", "ts", "idx", "label"]
-    feature_cols = [c for c in df.columns if c not in exclude_cols]
-    edge_features = df[feature_cols].apply(pd.to_numeric, errors='coerce').fillna(0).values.astype(np.float32)
+    # Identify features (all columns except label/timestamp related ones)
+    # Adjust these column names based on your actual CICIDS2017 column names
+    label_column = 'Label'  # Change this to your actual label column name
+    timestamp_column = 'Timestamp'  # Change this to your actual timestamp column
     
-    # Normalize
-    if edge_features.shape[1] > 0:
-        min_vals = edge_features.min(axis=0)
-        max_vals = edge_features.max(axis=0)
-        denom = max_vals - min_vals
-        denom[denom == 0] = 1
-        edge_features = (edge_features - min_vals) / denom
+    # Get feature columns (all except label and timestamp)
+    feature_columns = [col for col in df.columns if col not in [label_column, timestamp_column]]
     
-    # STEP 2: Save raw data (like the input CSV in preprocess_data.py)
-    print("\n2. Saving raw data...")
-    Path("data/").mkdir(parents=True, exist_ok=True)
-    raw_df = df[["u", "i", "ts", "label", "idx"]].copy()
-    raw_df.to_csv(f"data/{DATASET_NAME}.csv", index=False)
-    print(f"   Saved raw data with {len(raw_df)} edges")
-    print(f"   Node IDs: {raw_df['u'].min()} to {raw_df['u'].max()}")
+    # Normalize features
+    scaler = StandardScaler()
+    features_scaled = scaler.fit_transform(df[feature_columns])
     
-    # STEP 3: Verify continuous IDs (like the assert in preprocess_data.py)
-    print("\n3. Verifying continuous node IDs...")
-    u_continuous = (raw_df.u.max() - raw_df.u.min() + 1 == len(raw_df.u.unique()))
-    i_continuous = (raw_df.i.max() - raw_df.i.min() + 1 == len(raw_df.i.unique()))
-    print(f"   Source nodes continuous: {u_continuous}")
-    print(f"   Destination nodes continuous: {i_continuous}")
-    
-    if not u_continuous or not i_continuous:
-        print("   ⚠️  Warning: Node IDs are not continuous. Renumbering...")
-        # Renumber to make continuous
-        all_nodes = pd.concat([raw_df["u"], raw_df["i"]]).unique()
-        new_node_map = {old_id: new_id for new_id, old_id in enumerate(sorted(all_nodes))}
-        raw_df["u"] = raw_df["u"].map(new_node_map)
-        raw_df["i"] = raw_df["i"].map(new_node_map)
-        
-        # Also need to renumber edge features order
-        new_edge_features = np.zeros_like(edge_features)
-        for old_idx, new_idx in enumerate(sorted(all_nodes)):
-            if old_idx in new_node_map:
-                pass  # Features are per edge, not per node, so no change needed
-        
-        print(f"   New node range: {raw_df['u'].min()} to {raw_df['u'].max()}")
-    
-    # STEP 4: Reindex (add 1 to all indices, like preprocess_data.py)
-    print("\n4. Reindexing (adding 1 to all indices)...")
-    reindexed_df = raw_df.copy()
-    reindexed_df["u"] = reindexed_df["u"] + 1
-    reindexed_df["i"] = reindexed_df["i"] + 1
-    reindexed_df["idx"] = reindexed_df["idx"] + 1
-    
-    print(f"   New node range: {reindexed_df['u'].min()} to {reindexed_df['u'].max()}")
-    print(f"   New edge index range: {reindexed_df['idx'].min()} to {reindexed_df['idx'].max()}")
-    
-    # STEP 5: Add empty first row to edge features (like preprocess_data.py)
-    print("\n5. Adding dummy first row to edge features...")
-    empty = np.zeros((1, edge_features.shape[1]))
-    edge_features_with_dummy = np.vstack([empty, edge_features])
-    print(f"   Edge features shape: {edge_features_with_dummy.shape}")
-    
-    # STEP 6: Create node features (zeros with size = max_id + 1, like preprocess_data.py)
-    print("\n6. Creating node features...")
-    max_id = max(reindexed_df["u"].max(), reindexed_df["i"].max())
-    node_features = np.zeros((max_id + 1, 172)).astype(np.float32)
-    print(f"   Node features shape: {node_features.shape}")
-    print(f"   This includes node 0 (dummy) through node {max_id}")
-    
-    # STEP 7: Save final files
-    print("\n7. Saving final files...")
-    reindexed_df.to_csv(f"data/ml_{DATASET_NAME}.csv", index=False)
-    np.save(f"data/ml_{DATASET_NAME}.npy", edge_features_with_dummy)
-    np.save(f"data/ml_{DATASET_NAME}_node.npy", node_features)
-    
-    print("\n" + "="*60)
-    print("PREPROCESSING COMPLETE")
-    print("="*60)
-    print(f"Dataset: {DATASET_NAME}")
-    print(f"Edges: {len(reindexed_df)}")
-    print(f"Node features: {node_features.shape}")
-    print(f"  - Index 0: DUMMY NODE")
-    print(f"  - Indices 1-{max_id}: Real nodes")
-    print(f"Edge features: {edge_features_with_dummy.shape}")
-    print(f"  - Row 0: DUMMY (all zeros)")
-    print(f"  - Rows 1-{len(edge_features)}: Real edge features")
-    print("="*60)
-    
-    # Final verification
-    print("\n8. Final verification:")
-    print(f"   Node ID range in CSV: {reindexed_df['u'].min()} to {reindexed_df['u'].max()}")
-    print(f"   Node features cover: 0 to {node_features.shape[0]-1}")
-    print(f"   Edge features cover: 0 to {edge_features_with_dummy.shape[0]-1}")
-    
-    if reindexed_df['u'].max() < node_features.shape[0]:
-        print("   ✅ Node features array is large enough")
+    # Convert timestamp to numeric (if it's not already)
+    # You might need to customize this based on your timestamp format
+    if timestamp_column in df.columns:
+        # Assuming timestamp is already numeric, if not, convert it
+        if df[timestamp_column].dtype == 'object':
+            # Try to parse datetime
+            timestamps = pd.to_datetime(df[timestamp_column]).astype(int) // 10**9  # Convert to Unix timestamp
+        else:
+            timestamps = df[timestamp_column].values
     else:
-        print(f"   ❌ ERROR: Node features too small! Need at least {reindexed_df['u'].max()+1}")
+        # If no timestamp column, create sequential timestamps
+        timestamps = np.arange(len(df))
     
-    return reindexed_df, edge_features_with_dummy, node_features
+    # Encode labels as binary (assuming binary classification)
+    # Adjust this based on your label format
+    le = LabelEncoder()
+    labels = le.fit_transform(df[label_column])
+    
+    # For TGN, we need to create source and destination nodes
+    # In network traffic, we can use IP addresses or create synthetic node pairs
+    # Here's one approach: treat each flow as an interaction between source IP and destination IP
+    
+    # Check if we have IP columns, otherwise create synthetic node IDs
+    if 'Source IP' in df.columns and 'Destination IP' in df.columns:
+        # Encode IPs as integers
+        source_ips = LabelEncoder().fit_transform(df['Source IP'])
+        dest_ips = LabelEncoder().fit_transform(df['Destination IP'])
+    else:
+        # Create synthetic node pairs (each flow is between a unique source-destination pair)
+        # This is a simplification - you might want a different approach
+        n_flows = len(df)
+        source_ips = np.arange(n_flows)  # Each flow has a unique source
+        dest_ips = (np.arange(n_flows) + 1) % n_flows  # Each flow has a unique destination
+    
+    # Create edge indices (just sequential)
+    edge_idxs = np.arange(len(df))
+    
+    # Prepare the graph dataframe
+    graph_df = pd.DataFrame({
+        'u': source_ips,
+        'i': dest_ips,
+        'ts': timestamps,
+        'idx': edge_idxs,
+        'label': labels
+    })
+    
+    # Sort by timestamp
+    graph_df = graph_df.sort_values('ts').reset_index(drop=True)
+    
+    # Save the graph dataframe
+    output_csv_path = os.path.join(output_dir, f'ml_{dataset_name}.csv')
+    graph_df.to_csv(output_csv_path, index=False)
+    print(f"Saved graph data to {output_csv_path}")
+    
+    # Create edge features (use the normalized flow features)
+    # Make sure to reorder features to match the sorted graph_df
+    feature_order = graph_df['idx'].values
+    edge_features = features_scaled[feature_order]
+    
+    # Save edge features
+    edge_features_path = os.path.join(output_dir, f'ml_{dataset_name}.npy')
+    np.save(edge_features_path, edge_features)
+    print(f"Saved edge features to {edge_features_path}")
+    
+    # Create node features
+    # Get unique nodes (both sources and destinations)
+    unique_nodes = sorted(set(graph_df['u'].unique()) | set(graph_df['i'].unique()))
+    n_unique_nodes = len(unique_nodes)
+    n_features = edge_features.shape[1]  # Use same dimension as edge features
+    
+    # Create node features (you might want to customize this)
+    # Here we're creating random features as a placeholder
+    # In practice, you might want to aggregate flow features per node
+    np.random.seed(42)
+    node_features = np.random.randn(n_unique_nodes, n_features)
+    
+    # Save node features
+    node_features_path = os.path.join(output_dir, f'ml_{dataset_name}_node.npy')
+    np.save(node_features_path, node_features)
+    print(f"Saved node features to {node_features_path}")
+    
+    # Print statistics
+    print(f"\nDataset Statistics:")
+    print(f"Total interactions: {len(graph_df)}")
+    print(f"Unique nodes: {n_unique_nodes}")
+    print(f"Feature dimension: {n_features}")
+    print(f"Label distribution: {np.bincount(labels)}")
+    
+    return graph_df, edge_features, node_features
 
+# Example usage
 if __name__ == "__main__":
-    try:
-        df, edge_features, node_features = preprocess_cicids()
-        print("\n✅ Preprocessing successful!")
-        print("\nNow run training with:")
-        print(f"python train_self_supervised.py --data {DATASET_NAME} --bs 200 --n_epoch 50 --use_memory --memory_dim 172 --prefix tgn --gpu 0")
-    except Exception as e:
-        print(f"\n❌ ERROR: {e}")
-        import traceback
-        traceback.print_exc()
+    # Replace with your actual CICIDS2017 file path
+    input_file = "path/to/your/cicids2017.csv"
+    graph_df, edge_features, node_features = preprocess_cicids2017(
+        input_file, 
+        output_dir='./data/', 
+        dataset_name='cicids'
+    )
