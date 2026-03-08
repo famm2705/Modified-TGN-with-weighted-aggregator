@@ -17,197 +17,136 @@ def load_cicids(input_folder):
         dfs.append(df)
     return pd.concat(dfs, ignore_index=True)
 
-def fix_temporal_order(df):
-    """Ensure strictly increasing timestamps per node"""
-    print("   Fixing temporal order per node...")
-    
-    # Make a copy to avoid warnings
-    df = df.copy()
-    
-    # Process each unique node
-    for node_col in ['u', 'i']:
-        for node_id in df[node_col].unique():
-            mask = df[node_col] == node_id
-            if mask.sum() > 1:
-                indices = df.index[mask].tolist()
-                ts_values = df.loc[indices, 'ts'].values.copy()
-                
-                # Fix any non-increasing timestamps
-                for j in range(1, len(ts_values)):
-                    if ts_values[j] <= ts_values[j-1]:
-                        ts_values[j] = ts_values[j-1] + 1e-6
-                
-                df.loc[indices, 'ts'] = ts_values
-    
-    return df
-
 def preprocess_cicids():
-    """Main preprocessing function"""
+    """EXACT replica of preprocess_data.py workflow"""
     print("="*60)
     print("CICIDS Preprocessor for TGN")
     print("="*60)
     
-    # Load data
-    print("\n1. Loading data...")
+    # STEP 1: Load and prepare data (like reading the raw CSV in preprocess_data.py)
+    print("\n1. Loading and preparing data...")
     df = load_cicids(INPUT_FOLDER)
-    print(f"   Loaded {len(df)} rows")
-    
-    # Clean column names
     df.columns = df.columns.str.strip()
     
-    # Convert timestamps to UNIX time
-    print("\n2. Processing timestamps...")
+    # Convert timestamps
     df["ts"] = pd.to_datetime(df["Timestamp"], errors="coerce").astype(np.int64) // 10**9
     df = df.dropna(subset=["ts"])
-    print(f"   Valid timestamps: {len(df)} rows")
-    
-    # Sort by timestamp initially
     df = df.sort_values("ts").reset_index(drop=True)
     
-    # Create node mappings (start from 0)
-    print("\n3. Mapping IPs to node IDs...")
+    # Create initial node mappings (0-based, continuous)
     all_ips = pd.concat([df["Source IP"], df["Destination IP"]]).unique()
     node_map = {ip: idx for idx, ip in enumerate(all_ips)}
-    print(f"   Total unique nodes: {len(node_map)}")
     
     df["u"] = df["Source IP"].map(node_map)
     df["i"] = df["Destination IP"].map(node_map)
-    
-    # Create labels (1 for attack, 0 for benign)
     df["label"] = (df["Label"] != "BENIGN").astype(int)
-    
-    # Create edge indices
     df["idx"] = np.arange(len(df))
     
-    # Fix temporal ordering (CRITICAL for memory updates)
-    print("\n4. Ensuring temporal ordering...")
-    df = fix_temporal_order(df)
-    
-    # Final sort by timestamp
-    df = df.sort_values("ts").reset_index(drop=True)
-    df["idx"] = np.arange(len(df))
-    
-    # Extract edge features
-    print("\n5. Extracting edge features...")
-    exclude_cols = ["Source IP", "Destination IP", "Timestamp", "Label", 
-                    "u", "i", "ts", "idx", "label"]
+    # Extract features
+    exclude_cols = ["Source IP", "Destination IP", "Timestamp", "Label", "u", "i", "ts", "idx", "label"]
     feature_cols = [c for c in df.columns if c not in exclude_cols]
-    print(f"   Found {len(feature_cols)} feature columns")
+    edge_features = df[feature_cols].apply(pd.to_numeric, errors='coerce').fillna(0).values.astype(np.float32)
     
-    # Convert to numeric and handle missing
-    edge_features = df[feature_cols].apply(pd.to_numeric, errors='coerce').fillna(0).values
-    edge_features = edge_features.astype(np.float32)
-    
-    # Normalize features to [0,1] range
+    # Normalize
     if edge_features.shape[1] > 0:
-        print("   Normalizing features...")
         min_vals = edge_features.min(axis=0)
         max_vals = edge_features.max(axis=0)
         denom = max_vals - min_vals
         denom[denom == 0] = 1
         edge_features = (edge_features - min_vals) / denom
     
-    print(f"   Edge features shape: {edge_features.shape}")
+    # STEP 2: Save raw data (like the input CSV in preprocess_data.py)
+    print("\n2. Saving raw data...")
+    Path("data/").mkdir(parents=True, exist_ok=True)
+    raw_df = df[["u", "i", "ts", "label", "idx"]].copy()
+    raw_df.to_csv(f"data/{DATASET_NAME}.csv", index=False)
+    print(f"   Saved raw data with {len(raw_df)} edges")
+    print(f"   Node IDs: {raw_df['u'].min()} to {raw_df['u'].max()}")
     
-    # Create node features - CRITICAL: Add dummy node at index 0
+    # STEP 3: Verify continuous IDs (like the assert in preprocess_data.py)
+    print("\n3. Verifying continuous node IDs...")
+    u_continuous = (raw_df.u.max() - raw_df.u.min() + 1 == len(raw_df.u.unique()))
+    i_continuous = (raw_df.i.max() - raw_df.i.min() + 1 == len(raw_df.i.unique()))
+    print(f"   Source nodes continuous: {u_continuous}")
+    print(f"   Destination nodes continuous: {i_continuous}")
+    
+    if not u_continuous or not i_continuous:
+        print("   ⚠️  Warning: Node IDs are not continuous. Renumbering...")
+        # Renumber to make continuous
+        all_nodes = pd.concat([raw_df["u"], raw_df["i"]]).unique()
+        new_node_map = {old_id: new_id for new_id, old_id in enumerate(sorted(all_nodes))}
+        raw_df["u"] = raw_df["u"].map(new_node_map)
+        raw_df["i"] = raw_df["i"].map(new_node_map)
+        
+        # Also need to renumber edge features order
+        new_edge_features = np.zeros_like(edge_features)
+        for old_idx, new_idx in enumerate(sorted(all_nodes)):
+            if old_idx in new_node_map:
+                pass  # Features are per edge, not per node, so no change needed
+        
+        print(f"   New node range: {raw_df['u'].min()} to {raw_df['u'].max()}")
+    
+    # STEP 4: Reindex (add 1 to all indices, like preprocess_data.py)
+    print("\n4. Reindexing (adding 1 to all indices)...")
+    reindexed_df = raw_df.copy()
+    reindexed_df["u"] = reindexed_df["u"] + 1
+    reindexed_df["i"] = reindexed_df["i"] + 1
+    reindexed_df["idx"] = reindexed_df["idx"] + 1
+    
+    print(f"   New node range: {reindexed_df['u'].min()} to {reindexed_df['u'].max()}")
+    print(f"   New edge index range: {reindexed_df['idx'].min()} to {reindexed_df['idx'].max()}")
+    
+    # STEP 5: Add empty first row to edge features (like preprocess_data.py)
+    print("\n5. Adding dummy first row to edge features...")
+    empty = np.zeros((1, edge_features.shape[1]))
+    edge_features_with_dummy = np.vstack([empty, edge_features])
+    print(f"   Edge features shape: {edge_features_with_dummy.shape}")
+    
+    # STEP 6: Create node features (zeros with size = max_id + 1, like preprocess_data.py)
     print("\n6. Creating node features...")
-    num_nodes = len(node_map)
-    # Node features dimension should be 172 (as in the original TGN)
-    node_features = np.random.randn(num_nodes + 1, 172).astype(np.float32)
-    node_features[0] = 0  # Zero out the dummy node
+    max_id = max(reindexed_df["u"].max(), reindexed_df["i"].max())
+    node_features = np.zeros((max_id + 1, 172)).astype(np.float32)
     print(f"   Node features shape: {node_features.shape}")
-    print(f"   Note: Index 0 is dummy node (all zeros)")
-    print(f"   Real nodes: 1 to {num_nodes}")
+    print(f"   This includes node 0 (dummy) through node {max_id}")
     
-    # Final dataframe with required columns
-    final_df = df[["u", "i", "ts", "label", "idx"]].copy()
-    
-    # Verify format
-    print("\n7. Verifying output format...")
-    print(f"   Node IDs in CSV: min={final_df['u'].min()}, max={final_df['u'].max()}")
-    print(f"   Edge indices: min={final_df['idx'].min()}, max={final_df['idx'].max()}")
-    print(f"   Labels: {final_df['label'].value_counts().to_dict()}")
-    
-    # Check timestamp monotonicity
-    ts_diffs = final_df['ts'].diff().iloc[1:]
-    if (ts_diffs < 0).any():
-        print("   ⚠️  Warning: Some timestamps are still decreasing")
-        print(f"   Number of decreases: {(ts_diffs < 0).sum()}")
-    else:
-        print("   ✅ All timestamps are increasing")
-    
-    return final_df, edge_features, node_features
-
-def save_outputs(df, edge_features, node_features):
-    """Save files in the format expected by data_processing.py"""
-    print("\n8. Saving files...")
-    
-    Path(OUTPUT_FOLDER).mkdir(parents=True, exist_ok=True)
-    
-    # Save main data file (ml_cicids.csv)
-    csv_path = f"{OUTPUT_FOLDER}/ml_{DATASET_NAME}.csv"
-    df.to_csv(csv_path, index=False)
-    print(f"   ✅ Saved: {csv_path}")
-    print(f"      Shape: {df.shape}")
-    print(f"      Columns: {list(df.columns)}")
-    
-    # Save edge features (ml_cicids.npy)
-    edge_path = f"{OUTPUT_FOLDER}/ml_{DATASET_NAME}.npy"
-    np.save(edge_path, edge_features)
-    print(f"   ✅ Saved: {edge_path}")
-    print(f"      Shape: {edge_features.shape}")
-    
-    # Save node features (ml_cicids_node.npy) - WITH DUMMY NODE
-    node_path = f"{OUTPUT_FOLDER}/ml_{DATASET_NAME}_node.npy"
-    np.save(node_path, node_features)
-    print(f"   ✅ Saved: {node_path}")
-    print(f"      Shape: {node_features.shape}")
+    # STEP 7: Save final files
+    print("\n7. Saving final files...")
+    reindexed_df.to_csv(f"data/ml_{DATASET_NAME}.csv", index=False)
+    np.save(f"data/ml_{DATASET_NAME}.npy", edge_features_with_dummy)
+    np.save(f"data/ml_{DATASET_NAME}_node.npy", node_features)
     
     print("\n" + "="*60)
     print("PREPROCESSING COMPLETE")
     print("="*60)
     print(f"Dataset: {DATASET_NAME}")
-    print(f"Edges: {len(df)}")
-    print(f"Unique nodes in graph: {df['u'].nunique()} (IDs 0 to {df['u'].max()})")
-    print(f"Node features: {node_features.shape[0]} total")
-    print(f"  - Index 0: DUMMY NODE (all zeros)")
-    print(f"  - Indices 1-{node_features.shape[0]-1}: Real nodes")
-    print(f"Edge features dimension: {edge_features.shape[1]}")
+    print(f"Edges: {len(reindexed_df)}")
+    print(f"Node features: {node_features.shape}")
+    print(f"  - Index 0: DUMMY NODE")
+    print(f"  - Indices 1-{max_id}: Real nodes")
+    print(f"Edge features: {edge_features_with_dummy.shape}")
+    print(f"  - Row 0: DUMMY (all zeros)")
+    print(f"  - Rows 1-{len(edge_features)}: Real edge features")
     print("="*60)
     
-    # Verify files can be loaded
-    print("\n9. Verifying files can be loaded...")
-    try:
-        test_df = pd.read_csv(csv_path)
-        test_edge = np.load(edge_path)
-        test_node = np.load(node_path)
-        print("   ✅ All files loaded successfully")
-        print(f"   CSV node ID range: {test_df['u'].min()} to {test_df['u'].max()}")
-        print(f"   Node features shape: {test_node.shape}")
-        print(f"   First node feature (dummy): {test_node[0][:5]}... (should be zeros)")
-    except Exception as e:
-        print(f"   ❌ Error loading files: {e}")
+    # Final verification
+    print("\n8. Final verification:")
+    print(f"   Node ID range in CSV: {reindexed_df['u'].min()} to {reindexed_df['u'].max()}")
+    print(f"   Node features cover: 0 to {node_features.shape[0]-1}")
+    print(f"   Edge features cover: 0 to {edge_features_with_dummy.shape[0]-1}")
+    
+    if reindexed_df['u'].max() < node_features.shape[0]:
+        print("   ✅ Node features array is large enough")
+    else:
+        print(f"   ❌ ERROR: Node features too small! Need at least {reindexed_df['u'].max()+1}")
+    
+    return reindexed_df, edge_features_with_dummy, node_features
 
 if __name__ == "__main__":
     try:
-        # Run preprocessing
         df, edge_features, node_features = preprocess_cicids()
-        save_outputs(df, edge_features, node_features)
-        
-        print("\n" + "="*60)
-        print("NEXT STEPS:")
-        print("="*60)
-        print("Run training with:")
-        print(f"python train_self_supervised.py \\")
-        print(f"  --data {DATASET_NAME} \\")
-        print(f"  --bs 200 \\")
-        print(f"  --n_epoch 50 \\")
-        print(f"  --use_memory \\")
-        print(f"  --memory_dim 172 \\")
-        print(f"  --prefix tgn \\")
-        print(f"  --gpu 0")
-        print("="*60)
-        
+        print("\n✅ Preprocessing successful!")
+        print("\nNow run training with:")
+        print(f"python train_self_supervised.py --data {DATASET_NAME} --bs 200 --n_epoch 50 --use_memory --memory_dim 172 --prefix tgn --gpu 0")
     except Exception as e:
         print(f"\n❌ ERROR: {e}")
         import traceback
