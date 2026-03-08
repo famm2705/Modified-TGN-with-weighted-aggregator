@@ -4,6 +4,9 @@ import torch
 import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
+from torch_scatter import scatter_softmax, scatter_add
+
+
 
 
 class MessageAggregator(torch.nn.Module):
@@ -92,44 +95,8 @@ class MeanMessageAggregator(MessageAggregator):
         self.scorer = nn.Linear(message_dim, 1)
 
     def forward(self, node_ids, messages):
-        """
-        node_ids: tensor of node ids receiving messages
-        messages: dict {node_id: [(msg_tensor, timestamp), ...]}
-        """
-
-        unique_nodes = torch.tensor(list(messages.keys()), device=self.device)
-
-        # flatten all messages
-        all_msgs = []
-        msg_node_index = []
-
-        for idx, node in enumerate(unique_nodes):
-            node_msgs = [m[0] for m in messages[node.item()]]
-            all_msgs.extend(node_msgs)
-            msg_node_index.extend([idx] * len(node_msgs))
-
-        msg_tensor = torch.stack(all_msgs).to(self.device)
-        msg_node_index = torch.tensor(msg_node_index, device=self.device)
-
-        # compute scores for all messages at once
-        scores = self.scorer(msg_tensor).squeeze()
-
-        # normalize per node
-        weights = torch.zeros_like(scores)
-
-        for i in range(len(unique_nodes)):
-            mask = msg_node_index == i
-            weights[mask] = F.softmax(scores[mask], dim=0)
-
-        # weighted messages
-        weighted_msgs = weights.unsqueeze(1) * msg_tensor
-
-        # aggregate using scatter
-        aggregated = torch.zeros(len(unique_nodes), msg_tensor.size(1), device=self.device)
-
-        aggregated.index_add_(0, msg_node_index, weighted_msgs)
-
         return unique_nodes, aggregated
+
 
 
 class WeightedMessageAggregator(nn.Module):
@@ -139,10 +106,6 @@ class WeightedMessageAggregator(nn.Module):
         self.scorer = nn.Linear(message_dim, 1)
 
     def aggregate(self, node_ids, messages):
-        """
-        node_ids: list of node ids
-        messages: dict[node_id] -> [(msg_tensor, timestamp), ...]
-        """
 
         unique_nodes = [n for n in node_ids if n in messages]
 
@@ -150,41 +113,33 @@ class WeightedMessageAggregator(nn.Module):
             return [], torch.empty((0,)), torch.empty((0,))
 
         all_msgs = []
-        msg_node_index = []
+        node_index = []
         timestamps = []
 
         for idx, node in enumerate(unique_nodes):
             node_msgs = messages[node]
 
-            node_msg_tensors = [m[0] for m in node_msgs]
-            node_timestamps = [m[1] for m in node_msgs]
+            for msg, ts in node_msgs:
+                all_msgs.append(msg)
+                node_index.append(idx)
 
-            all_msgs.extend(node_msg_tensors)
-            msg_node_index.extend([idx] * len(node_msg_tensors))
-
-            # take latest timestamp
-            timestamps.append(node_timestamps[-1])
+            timestamps.append(node_msgs[-1][1])
 
         msg_tensor = torch.stack(all_msgs).to(self.device)
-        msg_node_index = torch.tensor(msg_node_index, device=self.device)
+        node_index = torch.tensor(node_index, device=self.device)
 
         scores = self.scorer(msg_tensor).squeeze(-1)
 
-        weights = torch.zeros_like(scores)
+        weights = scatter_softmax(scores, node_index)
 
-        for i in range(len(unique_nodes)):
-            mask = msg_node_index == i
-            weights[mask] = F.softmax(scores[mask], dim=0)
+        weighted_msgs = msg_tensor * weights.unsqueeze(-1)
 
-        weighted_msgs = weights.unsqueeze(-1) * msg_tensor
-
-        aggregated = torch.zeros(
-            len(unique_nodes),
-            msg_tensor.size(1),
-            device=self.device
+        aggregated = scatter_add(
+            weighted_msgs,
+            node_index,
+            dim=0,
+            dim_size=len(unique_nodes)
         )
-
-        aggregated.index_add_(0, msg_node_index, weighted_msgs)
 
         timestamps = torch.tensor(timestamps, device=self.device)
 
