@@ -47,7 +47,8 @@ total_epoch_times = data.get("total_epoch_times", [])
 best_val_ap = np.max(val_aps) if len(val_aps) else None
 best_val_auc = np.max(val_aucs) if len(val_aucs) else None
 
-avg_epoch_time = np.mean(epoch_times) if len(epoch_times) else None
+# Use total_epoch_times for average epoch duration
+avg_epoch_time = np.mean(total_epoch_times) if len(total_epoch_times) else None
 total_train_time = np.sum(total_epoch_times) if len(total_epoch_times) else None
 
 print("\n===== TGN Aggregator Results =====")
