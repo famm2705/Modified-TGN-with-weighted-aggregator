@@ -1,0 +1,87 @@
+import pandas as pd
+import numpy as np
+import glob
+import os
+
+INPUT_FOLDER = "/content/drive/MyDrive/flows"
+OUTPUT_FOLDER = "data"
+DATASET_NAME = "cicids"
+
+print("Loading CICIDS flow files...")
+
+files = glob.glob(f"{INPUT_FOLDER}/*.csv")
+
+dfs = []
+for f in files:
+    print("Reading:", f)
+    df = pd.read_csv(f, encoding="latin1", low_memory=False)
+    dfs.append(df)
+
+df = pd.concat(dfs, ignore_index=True)
+
+print("Cleaning column names...")
+df.columns = df.columns.str.strip()
+
+print("Converting timestamps...")
+df["ts"] = pd.to_datetime(df["Timestamp"], errors="coerce").astype("int64") // 10**9
+
+print("Mapping nodes (IP -> node id)...")
+
+node_map = {}
+node_id = 0
+
+def map_node(ip):
+    global node_id
+    if ip not in node_map:
+        node_map[ip] = node_id
+        node_id += 1
+    return node_map[ip]
+
+df["u"] = df["Source IP"].apply(map_node)
+df["i"] = df["Destination IP"].apply(map_node)
+
+print("Generating edge index...")
+df["idx"] = np.arange(len(df))
+
+print("Generating labels...")
+df["label"] = (df["Label"] != "BENIGN").astype(int)
+
+print("Sorting by timestamp...")
+df = df.sort_values("ts")
+
+print("Extracting edge features...")
+
+exclude_cols = [
+    "Source IP",
+    "Destination IP",
+    "Timestamp",
+    "Label",
+    "u",
+    "i",
+    "ts",
+    "idx",
+    "label"
+]
+
+feature_cols = [c for c in df.columns if c not in exclude_cols]
+
+edge_features = df[feature_cols].fillna(0).values
+
+print("Creating node features...")
+
+num_nodes = max(df["u"].max(), df["i"].max()) + 1
+node_features = np.random.rand(num_nodes, 172)
+
+print("Saving outputs...")
+
+os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+
+graph_df = df[["u", "i", "ts", "idx", "label"]]
+
+graph_df.to_csv(f"{OUTPUT_FOLDER}/ml_{DATASET_NAME}.csv", index=False)
+np.save(f"{OUTPUT_FOLDER}/ml_{DATASET_NAME}.npy", edge_features)
+np.save(f"{OUTPUT_FOLDER}/ml_{DATASET_NAME}_node.npy", node_features)
+
+print("Done.")
+print("Edges:", len(graph_df))
+print("Nodes:", num_nodes)
