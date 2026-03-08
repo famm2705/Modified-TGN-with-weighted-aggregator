@@ -3,7 +3,7 @@ import numpy as np
 import glob
 import os
 
-INPUT_FOLDER = "flows"  # change this to your Google Drive path if needed
+INPUT_FOLDER = "/content/drive/MyDrive/flows"  # change this to your Google Drive path if needed
 OUTPUT_FOLDER = "data"
 DATASET_NAME = "cicids"
 
