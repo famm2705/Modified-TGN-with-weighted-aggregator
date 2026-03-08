@@ -72,7 +72,7 @@ os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
 graph_df = df[["u", "i", "ts", "idx", "label"]]
 graph_df.to_csv(f"{OUTPUT_FOLDER}/ml_{DATASET_NAME}.csv", index=False)
-np.save(f"{OUTPUT_FOLDER}/ml_{DATASET_NAME}_edge.npy", edge_features)
+np.save(f"{OUTPUT_FOLDER}/ml_{DATASET_NAME}.npy", edge_features)
 np.save(f"{OUTPUT_FOLDER}/ml_{DATASET_NAME}_node.npy", node_features)
 
 print("Done.")
