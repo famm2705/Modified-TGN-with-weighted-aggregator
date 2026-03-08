@@ -1,82 +1,75 @@
 import pandas as pd
 import numpy as np
+from pathlib import Path
 import glob
-import os
+import argparse
 
-# --- CONFIGURATION ---
-INPUT_FOLDER = "/content/drive/MyDrive/flows"  # your CSV folder
-OUTPUT_FOLDER = "data"
-DATASET_NAME = "cicids"
-NODE_FEATURE_DIM = 172
-EDGE_FEATURE_FILL = 0.0
+def preprocess_cicids(input_folder, output_prefix="cicids"):
+    print("Loading CICIDS flow files...")
+    files = glob.glob(f"{input_folder}/*.csv")
+    dfs = []
+    for f in files:
+        print("Reading:", f)
+        df = pd.read_csv(f, encoding="latin1", low_memory=False)
+        dfs.append(df)
 
-# --- LOAD CSV FILES ---
-print("Loading CICIDS flow files...")
-files = glob.glob(f"{INPUT_FOLDER}/*.csv")
-dfs = []
-for f in files:
-    print("Reading:", f)
-    df = pd.read_csv(f, encoding="latin1", low_memory=False)
-    dfs.append(df)
-df = pd.concat(dfs, ignore_index=True)
+    df = pd.concat(dfs, ignore_index=True)
+    print("Cleaning column names...")
+    df.columns = df.columns.str.strip()
 
-# --- CLEAN COLUMNS ---
-print("Cleaning column names...")
-df.columns = df.columns.str.strip()
+    print("Converting timestamps to seconds...")
+    df["ts"] = pd.to_datetime(df["Timestamp"], errors="coerce").astype("int64") // 10**9
 
-# --- CONVERT TIMESTAMP ---
-print("Converting timestamps to seconds...")
-df["ts"] = pd.to_datetime(df["Timestamp"], errors="coerce").astype("int64") // 10**9
+    print("Mapping IPs to contiguous node IDs...")
+    node_map = {}
+    node_id = 0
 
-# --- CLEAN AND MAP IPs ---
-print("Cleaning Source/Destination IPs...")
-df = df.dropna(subset=['Source IP', 'Destination IP']).reset_index(drop=True)
-df['Source IP'] = df['Source IP'].astype(str)
-df['Destination IP'] = df['Destination IP'].astype(str)
+    def map_node(ip):
+        nonlocal node_id
+        if ip not in node_map:
+            node_map[ip] = node_id
+            node_id += 1
+        return node_map[ip]
 
-print("Mapping nodes (IP -> contiguous node ID)...")
-unique_nodes = np.unique(np.concatenate([df['Source IP'].values, df['Destination IP'].values]))
-node_map = {ip: idx for idx, ip in enumerate(unique_nodes)}
-df['u'] = df['Source IP'].map(node_map)
-df['i'] = df['Destination IP'].map(node_map)
-num_nodes = len(unique_nodes)
-print("Total nodes:", num_nodes)
+    df["u"] = df["Source IP"].apply(map_node)
+    df["i"] = df["Destination IP"].apply(map_node)
 
-# --- SORT AND FIX TIMESTAMPS ---
-print("Sorting by timestamp...")
-df = df.sort_values("ts").reset_index(drop=True)
+    print("Sorting by timestamp and ensuring strictly increasing timestamps per node...")
+    df = df.sort_values(["ts", "u", "i"]).reset_index(drop=True)
 
-# Ensure strictly increasing timestamps per node
-print("Ensuring strictly increasing timestamps per node...")
-epsilon = 1e-9
-df['ts'] += df.groupby('u').cumcount() * epsilon
-df['ts'] += df.groupby('i').cumcount() * epsilon
+    # Add tiny epsilon to guarantee strictly increasing timestamps per node
+    epsilon = 1e-6
+    df['ts'] += df.groupby('u').cumcount() * epsilon
+    df['ts'] += df.groupby('i').cumcount() * epsilon
 
-# --- EDGE INDEX AND LABELS ---
-print("Generating edge index and labels...")
-df["idx"] = np.arange(len(df))
-df["label"] = (df["Label"] != "BENIGN").astype(int)
+    print("Generating edge indices and labels...")
+    df["idx"] = np.arange(len(df))
+    df["label"] = (df["Label"] != "BENIGN").astype(int)
 
-# --- EDGE FEATURES ---
-print("Extracting numeric edge features...")
-exclude_cols = ["Source IP", "Destination IP", "Timestamp", "Label",
-                "u", "i", "ts", "idx", "label"]
-feature_cols = [c for c in df.columns if c not in exclude_cols]
-edge_features = df[feature_cols].apply(pd.to_numeric, errors='coerce').fillna(EDGE_FEATURE_FILL).values.astype(np.float32)
+    exclude_cols = ["Source IP", "Destination IP", "Timestamp", "Label", "u", "i", "ts", "idx", "label"]
+    feature_cols = [c for c in df.columns if c not in exclude_cols]
 
-# --- NODE FEATURES ---
-print("Creating node features...")
-node_features = np.random.rand(num_nodes, NODE_FEATURE_DIM).astype(np.float32)
+    print("Extracting numeric edge features...")
+    edge_features = df[feature_cols].apply(pd.to_numeric, errors='coerce').fillna(0).values.astype(np.float32)
 
-# --- SAVE FILES ---
-print("Saving dataset...")
-os.makedirs(OUTPUT_FOLDER, exist_ok=True)
-graph_df = df[["u", "i", "ts", "idx", "label"]]
+    print("Creating node features...")
+    num_nodes = max(df["u"].max(), df["i"].max()) + 1
+    node_features = np.random.rand(num_nodes, 172).astype(np.float32)
 
-graph_df.to_csv(f"{OUTPUT_FOLDER}/ml_{DATASET_NAME}.csv", index=False)
-np.save(f"{OUTPUT_FOLDER}/ml_{DATASET_NAME}.npy", edge_features)
-np.save(f"{OUTPUT_FOLDER}/ml_{DATASET_NAME}_node.npy", node_features)
+    print("Saving processed files...")
+    Path("data/").mkdir(parents=True, exist_ok=True)
+    df[["u", "i", "ts", "idx", "label"]].to_csv(f"data/ml_{output_prefix}.csv", index=False)
+    np.save(f"data/ml_{output_prefix}.npy", edge_features)
+    np.save(f"data/ml_{output_prefix}_node.npy", node_features)
 
-print("Done.")
-print("Edges:", len(graph_df))
-print("Nodes:", num_nodes)
+    print("Done. Edges:", len(df), "Nodes:", num_nodes)
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser('Preprocess CICIDS for TGN')
+    parser.add_argument('--input_folder', type=str, required=True,
+                        help='Folder containing CICIDS CSV flow files')
+    parser.add_argument('--prefix', type=str, default="cicids",
+                        help='Prefix for output files')
+    args = parser.parse_args()
+
+    preprocess_cicids(args.input_folder, args.prefix)
