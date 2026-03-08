@@ -4,7 +4,7 @@ import glob
 import os
 
 # --- CONFIGURATION ---
-INPUT_FOLDER = "/content/drive/MyDrive/flows"  # change this to your path
+INPUT_FOLDER = "/content/drive/MyDrive/flows"  # your CSV folder
 OUTPUT_FOLDER = "data"
 DATASET_NAME = "cicids"
 NODE_FEATURE_DIM = 172
@@ -28,13 +28,17 @@ df.columns = df.columns.str.strip()
 print("Converting timestamps to seconds...")
 df["ts"] = pd.to_datetime(df["Timestamp"], errors="coerce").astype("int64") // 10**9
 
-# --- MAP NODE IDs ---
+# --- CLEAN AND MAP IPs ---
+print("Cleaning Source/Destination IPs...")
+df = df.dropna(subset=['Source IP', 'Destination IP']).reset_index(drop=True)
+df['Source IP'] = df['Source IP'].astype(str)
+df['Destination IP'] = df['Destination IP'].astype(str)
+
 print("Mapping nodes (IP -> contiguous node ID)...")
 unique_nodes = np.unique(np.concatenate([df['Source IP'].values, df['Destination IP'].values]))
 node_map = {ip: idx for idx, ip in enumerate(unique_nodes)}
 df['u'] = df['Source IP'].map(node_map)
 df['i'] = df['Destination IP'].map(node_map)
-
 num_nodes = len(unique_nodes)
 print("Total nodes:", num_nodes)
 
