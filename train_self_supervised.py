@@ -371,6 +371,14 @@ model=tgn,
     "epoch_times": epoch_times,
     "train_losses": train_losses,
     "total_epoch_times": total_epoch_times
+    "test_acc": test_acc,
+    "test_prec": test_prec,
+    "test_rec": test_rec,
+    "test_f1": test_f1,
+    "test_mrr": test_mrr,
+    "test_hits1": test_hits1,
+    "test_hits5": test_hits5,
+    "test_hits10": test_hits10,
   }, open(results_path, "wb"))
 
   logger.info('Saving TGN model')
