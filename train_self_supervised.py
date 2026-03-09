@@ -370,7 +370,7 @@ model=tgn,
     "new_node_test_auc": nn_test_auc,
     "epoch_times": epoch_times,
     "train_losses": train_losses,
-    "total_epoch_times": total_epoch_times
+    "total_epoch_times": total_epoch_times,
     "test_acc": test_acc,
     "test_prec": test_prec,
     "test_rec": test_rec,
