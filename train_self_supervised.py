@@ -155,22 +155,22 @@ for i in range(args.n_runs):
 
   if not Path(csv_path).exists():
       with open(csv_path, "w", newline="") as f:
-          writer = csv.writer(f)
-          writer.writerow([
-              "epoch",
-              "train_loss",
-              "val_auc",
-              "val_ap",
-              "val_acc",
-              "val_precision",
-              "val_recall",
-              "val_f1",
-              "val_mrr",
-              "hits1",
-              "hits5",
-              "hits10",
-              "new_node_val_auc",
-              "new_node_val_ap"
+        writer = csv.writer(f)
+        writer.writerow([
+          "epoch",
+          "train_loss",
+          "val_auc",
+          "val_ap",
+          "val_acc",
+          "val_precision",
+          "val_recall",
+          "val_f1",
+          "val_mrr",
+          "hits1",
+          "hits5",
+          "hits10",
+          "new_node_val_auc",
+          "new_node_val_ap"
           ])
 
   
