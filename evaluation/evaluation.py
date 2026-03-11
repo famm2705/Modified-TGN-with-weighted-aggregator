@@ -25,8 +25,6 @@ def eval_edge_prediction(model, negative_edge_sampler, data, n_neighbors, batch_
     F1
     MRR
     Hits@1
-    Hits@5
-    Hits@10
     """
 
     assert negative_edge_sampler.seed is not None

@@ -92,8 +92,6 @@ print("Ranking Metrics")
 
 print(f"MRR:    {fmt(test_mrr)}")
 print(f"Hits@1: {fmt(test_hits1)}")
-print(f"Hits@5: {fmt(test_hits5)}")
-print(f"Hits@10:{fmt(test_hits10)}")
 
 print("----------------------------------")
 print("New Node Test")
