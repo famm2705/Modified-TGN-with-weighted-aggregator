@@ -7,6 +7,7 @@ import torch
 import numpy as np
 import pickle
 from pathlib import Path
+import csv
 
 
 from evaluation.evaluation import eval_edge_prediction
@@ -149,6 +150,30 @@ mean_time_shift_src, std_time_shift_src, mean_time_shift_dst, std_time_shift_dst
 for i in range(args.n_runs):
   RESULTS_PATH = "/content/drive/MyDrive/tgn_results"
   Path(RESULTS_PATH).mkdir(parents=True, exist_ok=True)
+
+  csv_path = f"{RESULTS_PATH}/{args.prefix}_{args.data}_{args.aggregator}_metrics.csv"
+
+  if not Path(csv_path).exists():
+      with open(csv_path, "w", newline="") as f:
+          writer = csv.writer(f)
+          writer.writerow([
+              "epoch",
+              "train_loss",
+              "val_auc",
+              "val_ap",
+              "val_acc",
+              "val_precision",
+              "val_recall",
+              "val_f1",
+              "val_mrr",
+              "hits1",
+              "hits5",
+              "hits10",
+              "new_node_val_auc",
+              "new_node_val_ap"
+          ])
+
+  
 
   results_path = (
     f"{RESULTS_PATH}/{args.prefix}_{args.data}_{args.aggregator}_{i}.pkl"
@@ -316,6 +341,25 @@ model=tgn,
       'val auc: {}, new node val auc: {}'.format(val_auc, nn_val_auc))
     logger.info(
       'val ap: {}, new node val ap: {}'.format(val_ap, nn_val_ap))
+
+    with open(csv_path, "a", newline="") as f:
+    writer = csv.writer(f)
+    writer.writerow([
+        epoch,
+        np.mean(m_loss),
+        val_auc,
+        val_ap,
+        val_acc,
+        val_prec,
+        val_rec,
+        val_f1,
+        val_mrr,
+        val_hits1,
+        val_hits5,
+        val_hits10,
+        nn_val_auc,
+        nn_val_ap
+    ])
 
     # Early stopping
     if early_stopper.early_stop_check(val_ap):
