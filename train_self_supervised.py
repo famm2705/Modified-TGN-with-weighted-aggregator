@@ -343,8 +343,8 @@ model=tgn,
       'val ap: {}, new node val ap: {}'.format(val_ap, nn_val_ap))
 
     with open(csv_path, "a", newline="") as f:
-    writer = csv.writer(f)
-    writer.writerow([
+      writer = csv.writer(f)
+      writer.writerow([
         epoch,
         np.mean(m_loss),
         val_auc,
