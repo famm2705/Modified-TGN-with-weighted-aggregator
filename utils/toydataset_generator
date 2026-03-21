@@ -1,30 +1,101 @@
 import numpy as np
 import pandas as pd
 
+# ======================
 # Parameters
+# ======================
 num_nodes = 100
 num_edges = 2000
 feature_dim = 5
 
-# 1. Nodes
-nodes = np.arange(num_nodes)
+np.random.seed(42)
 
-# 2. Edges
-sources = np.random.randint(0, num_nodes, num_edges)
-destinations = np.random.randint(0, num_nodes, num_edges)
+# ======================
+# 1. Define network (hospital structure)
+# ======================
+num_servers = 10
+servers = np.arange(num_servers)
+devices = np.arange(num_servers, num_nodes)
 
-# 3. Irregular timestamps
-timestamps = np.cumsum(np.random.exponential(scale=3, size=num_edges))
+sources = np.zeros(num_edges, dtype=int)
+destinations = np.zeros(num_edges, dtype=int)
 
-# 4. Labels (anomalies)
+# ======================
+# 2. Generate NORMAL traffic
+# ======================
+for i in range(num_edges):
+    if np.random.rand() < 0.85:
+        # device -> server (normal behavior)
+        sources[i] = np.random.choice(devices)
+        destinations[i] = np.random.choice(servers)
+    else:
+        # rare device-device
+        sources[i] = np.random.choice(devices)
+        destinations[i] = np.random.choice(devices)
+
+# ======================
+# 3. Generate timestamps (semi-structured)
+# ======================
+timestamps = []
+t = 0
+
+for i in range(num_edges):
+    if np.random.rand() < 0.1:
+        delta = np.random.exponential(0.2)  # small bursts
+    else:
+        delta = np.random.exponential(3.0)  # normal spacing
+    t += delta
+    timestamps.append(t)
+
+timestamps = np.array(timestamps)
+
+# ======================
+# 4. Initialize features (normal behavior)
+# ======================
+features = np.random.normal(loc=0.0, scale=0.5, size=(num_edges, feature_dim))
+
+# ======================
+# 5. Inject ATTACKS
+# ======================
 labels = np.zeros(num_edges)
-anomaly_idx = np.random.choice(num_edges, size=int(0.05*num_edges), replace=False)
-labels[anomaly_idx] = 1
 
-# 5. Features
-features = np.random.randn(num_edges, feature_dim)
+# --- A) DDoS attack ---
+ddos_start = int(0.3 * num_edges)
+ddos_end = ddos_start + 100
+target_server = np.random.choice(servers)
 
+for i in range(ddos_start, ddos_end):
+    sources[i] = np.random.choice(devices)
+    destinations[i] = target_server
+    timestamps[i] = timestamps[ddos_start] + np.random.uniform(0, 0.01)  # burst
+    features[i] += 3  # abnormal feature spike
+    labels[i] = 1
+
+# --- B) Lateral movement ---
+lat_start = int(0.55 * num_edges)
+lat_end = lat_start + 100
+attacker = np.random.choice(devices)
+
+for i in range(lat_start, lat_end):
+    sources[i] = attacker
+    destinations[i] = np.random.choice(devices)
+    features[i] += 2
+    labels[i] = 1
+
+# --- C) Data exfiltration ---
+exf_start = int(0.75 * num_edges)
+exf_end = exf_start + 100
+target = np.random.choice(servers)
+
+for i in range(exf_start, exf_end):
+    sources[i] = np.random.choice(devices)
+    destinations[i] = target
+    features[i] += np.array([5, 5, 5, 0, 0])  # large values (data transfer)
+    labels[i] = 1
+
+# ======================
 # 6. Build dataframe
+# ======================
 df = pd.DataFrame({
     'u': sources,
     'i': destinations,
@@ -35,5 +106,7 @@ df = pd.DataFrame({
 for j in range(feature_dim):
     df[f'f{j}'] = features[:, j]
 
+# ======================
 # 7. Save
+# ======================
 df.to_csv('./data/toy.csv', index=False)
