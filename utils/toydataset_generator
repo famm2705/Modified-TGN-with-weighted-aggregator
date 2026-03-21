@@ -1,0 +1,39 @@
+import numpy as np
+import pandas as pd
+
+# Parameters
+num_nodes = 100
+num_edges = 2000
+feature_dim = 5
+
+# 1. Nodes
+nodes = np.arange(num_nodes)
+
+# 2. Edges
+sources = np.random.randint(0, num_nodes, num_edges)
+destinations = np.random.randint(0, num_nodes, num_edges)
+
+# 3. Irregular timestamps
+timestamps = np.cumsum(np.random.exponential(scale=3, size=num_edges))
+
+# 4. Labels (anomalies)
+labels = np.zeros(num_edges)
+anomaly_idx = np.random.choice(num_edges, size=int(0.05*num_edges), replace=False)
+labels[anomaly_idx] = 1
+
+# 5. Features
+features = np.random.randn(num_edges, feature_dim)
+
+# 6. Build dataframe
+df = pd.DataFrame({
+    'u': sources,
+    'i': destinations,
+    'ts': timestamps,
+    'label': labels
+})
+
+for j in range(feature_dim):
+    df[f'f{j}'] = features[:, j]
+
+# 7. Save
+df.to_csv('./data/toy.csv', index=False)
