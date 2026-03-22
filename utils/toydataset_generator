@@ -6,7 +6,7 @@ import pandas as pd
 # ======================
 num_nodes = 100
 num_edges = 7500
-feature_dim = 16
+feature_dim = 5
 
 np.random.seed(42)
 
