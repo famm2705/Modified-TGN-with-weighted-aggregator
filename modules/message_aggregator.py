@@ -66,6 +66,7 @@ class MeanMessageAggregator(nn.Module):
         super().__init__()
         self.device = device
 
+    def aggregate(self, node_ids, messages):
 
         unique_nodes = [n for n in node_ids if n in messages]
 
@@ -88,7 +89,6 @@ class MeanMessageAggregator(nn.Module):
         msg_tensor = torch.stack(all_msgs).to(self.device)
         node_index = torch.tensor(node_index, device=self.device)
 
-        # Key improvement: vectorized mean
         aggregated = scatter_mean(
             msg_tensor,
             node_index,
