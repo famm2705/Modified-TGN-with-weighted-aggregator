@@ -4,7 +4,7 @@ import torch
 import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_scatter import scatter_softmax, scatter_add
+from torch_scatter import scatter_softmax, scatter_add, scatter_mean
 
 
 
@@ -61,41 +61,44 @@ class LastMessageAggregator(MessageAggregator):
     return to_update_node_ids, unique_messages, unique_timestamps
 
 
-class MeanMessageAggregator(MessageAggregator):
-  def __init__(self, device):
-    super(MeanMessageAggregator, self).__init__(device)
-
-  def aggregate(self, node_ids, messages):
-    """Only keep the last message for each node"""
-    unique_node_ids = np.unique(node_ids)
-    unique_messages = []
-    unique_timestamps = []
-
-    to_update_node_ids = []
-    n_messages = 0
-
-    for node_id in unique_node_ids:
-      if len(messages[node_id]) > 0:
-        n_messages += len(messages[node_id])
-        to_update_node_ids.append(node_id)
-        unique_messages.append(torch.mean(torch.stack([m[0] for m in messages[node_id]]), dim=0))
-        unique_timestamps.append(messages[node_id][-1][1])
-
-    unique_messages = torch.stack(unique_messages) if len(to_update_node_ids) > 0 else []
-    unique_timestamps = torch.stack(unique_timestamps) if len(to_update_node_ids) > 0 else []
-
-    return to_update_node_ids, unique_messages, unique_timestamps
-
-
-
-
-    def __init__(self, message_dim, device):
+class MeanMessageAggregator(nn.Module):
+    def __init__(self, device):
         super().__init__()
         self.device = device
-        self.scorer = nn.Linear(message_dim, 1)
 
-    def forward(self, node_ids, messages):
-        return unique_nodes, aggregated
+
+        unique_nodes = [n for n in node_ids if n in messages]
+
+        if len(unique_nodes) == 0:
+            return [], torch.empty((0,)), torch.empty((0,))
+
+        all_msgs = []
+        node_index = []
+        timestamps = []
+
+        for idx, node in enumerate(unique_nodes):
+            node_msgs = messages[node]
+
+            for msg, ts in node_msgs:
+                all_msgs.append(msg)
+                node_index.append(idx)
+
+            timestamps.append(node_msgs[-1][1])
+
+        msg_tensor = torch.stack(all_msgs).to(self.device)
+        node_index = torch.tensor(node_index, device=self.device)
+
+        # Key improvement: vectorized mean
+        aggregated = scatter_mean(
+            msg_tensor,
+            node_index,
+            dim=0,
+            dim_size=len(unique_nodes)
+        )
+
+        timestamps = torch.tensor(timestamps, device=self.device)
+
+        return unique_nodes, aggregated, timestamps
 
 
 
