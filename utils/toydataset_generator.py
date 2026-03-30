@@ -121,4 +121,4 @@ for j in range(feature_dim):
 # ======================
 # 4) Save
 # ======================
-df.to_csv('./data/toy_sparse.csv', index=False)
+df.to_csv('./data/toy.csv', index=False)
