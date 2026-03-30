@@ -23,7 +23,7 @@ labels = []
 t = 0
 
 # ======================
-# Helper: normal interaction
+# Helper: normal interaction (sparser)
 # ======================
 def normal_interaction():
     if np.random.rand() < 0.85:
@@ -38,15 +38,16 @@ def normal_interaction():
 
 
 # ======================
-# 1) Generate base traffic
+# 1) Generate base traffic (sparse)
 # ======================
 for i in range(num_edges):
     u, v, feat, lbl = normal_interaction()
     
-    if np.random.rand() < 0.2:
-        delta = np.random.exponential(0.5)
+    # make most interactions far apart
+    if np.random.rand() < 0.8:
+        delta = np.random.exponential(5.0)  # long gap
     else:
-        delta = np.random.exponential(3.0)
+        delta = np.random.exponential(0.5)  # bursts
     
     t += delta
     
@@ -57,74 +58,50 @@ for i in range(num_edges):
     labels.append(lbl)
 
 # ======================
-# 2) Inject ATTACKS (harder temporal patterns)
+# 2) Inject ATTACKS (keep bursts for attacks)
 # ======================
 
-# ---- A) Slow DDoS (long + noisy) ----
+# ---- A) Slow DDoS (bursty in sparse background) ----
 target_server = np.random.choice(servers)
 attack_nodes = np.random.choice(devices, size=12, replace=False)
 
 for i in range(500, 3000):
-    
-    # insert cooldown noise (break short-term signal)
     if np.random.rand() < 0.3:
         continue
-    
     sources[i] = np.random.choice(attack_nodes)
     destinations[i] = target_server
-    
-    # VERY subtle feature shift
     features[i] += np.random.normal(0.15, 0.05, feature_dim)
-    
-    # label only very late
     if i > 2200:
         labels[i] = 1
 
-
-# ---- B) Lateral movement (longer + spread + noisy) ----
+# ---- B) Lateral movement ----
 attacker = np.random.choice(devices)
 visited = set()
 
 for i in range(3200, 5500):
-    
     if np.random.rand() < 0.25:
         continue
-    
     new_target = np.random.choice(devices)
-    
     sources[i] = attacker
     destinations[i] = new_target
-    
     features[i] += np.random.normal(0.1, 0.05, feature_dim)
-    
     visited.add(new_target)
-    
-    # delay label strongly
     if len(visited) > 25 and i > 4800:
         labels[i] = 1
 
-
-# ---- C) Data exfiltration (very slow drift + interruptions) ----
+# ---- C) Data exfiltration ----
 exf_node = np.random.choice(devices)
 target_server = np.random.choice(servers)
 
 for i in range(5500, 7400):
-    
     if np.random.rand() < 0.35:
         continue
-    
     sources[i] = exf_node
     destinations[i] = target_server
-    
     drift = (i - 5500) / 1900
-    
-    # smaller drift than before
     features[i] += drift * np.array([0.3, 0.3, 0.3, 0, 0, 0])
-    
-    # label very late
     if drift > 0.75:
         labels[i] = 1
-
 
 # ======================
 # 3) Convert to dataframe
@@ -144,4 +121,4 @@ for j in range(feature_dim):
 # ======================
 # 4) Save
 # ======================
-df.to_csv('./data/toy.csv', index=False)
+df.to_csv('./data/toy_sparse.csv', index=False)
