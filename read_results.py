@@ -17,7 +17,7 @@ parser.add_argument(
     "--data",
     type=str,
     required=True,
-    choices=["wikipedia", "reddit", "toy"],
+    choices=["wikipedia", "reddit", "toy_sparse", "toy_dense"],
     help="Dataset name"
 )
 
