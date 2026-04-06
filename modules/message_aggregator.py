@@ -106,35 +106,49 @@ class WeightedMessageAggregator(nn.Module):
     def __init__(self, message_dim, device):
         super().__init__()
         self.device = device
+
+        # Scoring on FINAL message representation (after message_function)
         self.scorer = nn.Linear(message_dim, 1)
 
     def aggregate(self, node_ids, messages):
+        """
+        node_ids: list of node ids in batch
+        messages: dict[node_id] -> list of (message, timestamp)
+        """
 
-        unique_nodes = [n for n in node_ids if n in messages]
+        # Deduplicate nodes PROPERLY
+        unique_nodes = list(set(node_ids))
+        unique_nodes = [n for n in unique_nodes if n in messages and len(messages[n]) > 0]
 
         if len(unique_nodes) == 0:
-            return [], torch.empty((0,)), torch.empty((0,))
+            return [], torch.empty((0,), device=self.device), torch.empty((0,), device=self.device)
 
         all_msgs = []
         node_index = []
         timestamps = []
 
+        # Flatten messages while tracking which node they belong to
         for idx, node in enumerate(unique_nodes):
             node_msgs = messages[node]
 
-            for msg, ts in node_msgs:
-                all_msgs.append(msg)
-                node_index.append(idx)
+            msg_stack = torch.stack([m[0] for m in node_msgs]).to(self.device)
+            all_msgs.append(msg_stack)
 
+            node_index.append(torch.full((len(node_msgs),), idx, device=self.device))
+
+            # Use LAST timestamp per node (consistent with TGN)
             timestamps.append(node_msgs[-1][1])
 
-        msg_tensor = torch.stack(all_msgs).to(self.device)
-        node_index = torch.tensor(node_index, device=self.device)
+        msg_tensor = torch.cat(all_msgs, dim=0)              # [total_msgs, dim]
+        node_index = torch.cat(node_index, dim=0)            # [total_msgs]
 
-        scores = self.scorer(msg_tensor).squeeze(-1)
+        # ---- SCORING ----
+        scores = self.scorer(msg_tensor).squeeze(-1)         # [total_msgs]
 
-        weights = scatter_softmax(scores, node_index)
+        # ---- NORMALIZATION (per node) ----
+        weights = scatter_softmax(scores, node_index)        # stable per-node softmax
 
+        # ---- WEIGHTED AGGREGATION ----
         weighted_msgs = msg_tensor * weights.unsqueeze(-1)
 
         aggregated = scatter_add(
@@ -142,12 +156,11 @@ class WeightedMessageAggregator(nn.Module):
             node_index,
             dim=0,
             dim_size=len(unique_nodes)
-        )
+        )  # [num_nodes, dim]
 
-        timestamps = torch.tensor(timestamps, device=self.device)
+        timestamps = torch.stack(timestamps).to(self.device)
 
         return unique_nodes, aggregated, timestamps
-
 
 class AttentionMessageAggregator(MessageAggregator):
   def __init__(self, device, n_heads: int, message_dim: int, dropout: float=0, post_norm: Optional[bool] = None, learnable: Optional[bool]=None, add_cls_token: Optional[bool]=None):
