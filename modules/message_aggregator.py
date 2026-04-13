@@ -7,67 +7,60 @@ import torch.nn.functional as F
 from torch_scatter import scatter_softmax, scatter_add, scatter_mean
 
 
-
-
 class MessageAggregator(torch.nn.Module):
-  """
-  Abstract class for the message aggregator module, which given a batch of node ids and
-  corresponding messages, aggregates messages with the same node id.
-  """
-  def __init__(self, device):
-    super(MessageAggregator, self).__init__()
-    self.device = device
-
-  def aggregate(self, node_ids, messages):
     """
-    Given a list of node ids, and a list of messages of the same length, aggregate different
-    messages for the same id using one of the possible strategies.
-    :param node_ids: A list of node ids of length batch_size
-    :param messages: A tensor of shape [batch_size, message_length]
-    :param timestamps A tensor of shape [batch_size]
-    :return: A tensor of shape [n_unique_node_ids, message_length] with the aggregated messages
+    Abstract class for the message aggregator module, which given a batch of node ids and
+    corresponding messages, aggregates messages with the same node id.
     """
-
-  def group_by_id(self, node_ids, messages, timestamps):
-    node_id_to_messages = defaultdict(list)
-
-    for i, node_id in enumerate(node_ids):
-      node_id_to_messages[node_id].append((messages[i], timestamps[i]))
-
-    return node_id_to_messages
-
-
-class LastMessageAggregator(MessageAggregator):
-  def __init__(self, device):
-    super(LastMessageAggregator, self).__init__(device)
-
-  def aggregate(self, node_ids, messages):
-    """Only keep the last message for each node"""    
-    unique_node_ids = np.unique(node_ids)
-    unique_messages = []
-    unique_timestamps = []
-    
-    to_update_node_ids = []
-    
-    for node_id in unique_node_ids:
-        if len(messages[node_id]) > 0:
-            to_update_node_ids.append(node_id)
-            unique_messages.append(messages[node_id][-1][0])
-            unique_timestamps.append(messages[node_id][-1][1])
-    
-    unique_messages = torch.stack(unique_messages) if len(to_update_node_ids) > 0 else []
-    unique_timestamps = torch.stack(unique_timestamps) if len(to_update_node_ids) > 0 else []
-
-    return to_update_node_ids, unique_messages, unique_timestamps
-
-
-class MeanMessageAggregator(nn.Module):
     def __init__(self, device):
-        super().__init__()
+        super(MessageAggregator, self).__init__()
         self.device = device
 
     def aggregate(self, node_ids, messages):
+        """
+        Given a list of node ids, and a list of messages of the same length, aggregate different
+        messages for the same id using one of the possible strategies.
+        :param node_ids: A list of node ids of length batch_size
+        :param messages: A tensor of shape [batch_size, message_length]
+        :return: A tensor of shape [n_unique_node_ids, message_length] with the aggregated messages
+        """
 
+    def group_by_id(self, node_ids, messages, timestamps):
+        node_id_to_messages = defaultdict(list)
+        for i, node_id in enumerate(node_ids):
+            node_id_to_messages[node_id].append((messages[i], timestamps[i]))
+        return node_id_to_messages
+
+
+class LastMessageAggregator(MessageAggregator):
+    def __init__(self, device):
+        super(LastMessageAggregator, self).__init__(device)
+
+    def aggregate(self, node_ids, messages):
+        """Only keep the last message for each node"""
+        unique_node_ids = np.unique(node_ids)
+        unique_messages = []
+        unique_timestamps = []
+        to_update_node_ids = []
+
+        for node_id in unique_node_ids:
+            if len(messages[node_id]) > 0:
+                to_update_node_ids.append(node_id)
+                unique_messages.append(messages[node_id][-1][0])
+                unique_timestamps.append(messages[node_id][-1][1])
+
+        unique_messages = torch.stack(unique_messages) if len(to_update_node_ids) > 0 else []
+        unique_timestamps = torch.stack(unique_timestamps) if len(to_update_node_ids) > 0 else []
+
+        return to_update_node_ids, unique_messages, unique_timestamps
+
+
+# FIX 5: Inherit from MessageAggregator, not nn.Module directly
+class MeanMessageAggregator(MessageAggregator):
+    def __init__(self, device):
+        super().__init__(device)
+
+    def aggregate(self, node_ids, messages):
         unique_nodes = [n for n in node_ids if n in messages]
 
         if len(unique_nodes) == 0:
@@ -79,11 +72,9 @@ class MeanMessageAggregator(nn.Module):
 
         for idx, node in enumerate(unique_nodes):
             node_msgs = messages[node]
-
             for msg, ts in node_msgs:
                 all_msgs.append(msg)
                 node_index.append(idx)
-
             timestamps.append(node_msgs[-1][1])
 
         msg_tensor = torch.stack(all_msgs).to(self.device)
@@ -96,27 +87,17 @@ class MeanMessageAggregator(nn.Module):
             dim_size=len(unique_nodes)
         )
 
-        timestamps = torch.tensor(timestamps, device=self.device)
-
+        timestamps = torch.stack(timestamps).to(self.device)
         return unique_nodes, aggregated, timestamps
 
 
-
-class WeightedMessageAggregator(nn.Module):
+# FIX 6: Inherit from MessageAggregator, not nn.Module directly
+class WeightedMessageAggregator(MessageAggregator):
     def __init__(self, message_dim, device):
-        super().__init__()
-        self.device = device
-
-        # Scoring on FINAL message representation (after message_function)
+        super().__init__(device)
         self.scorer = nn.Linear(message_dim, 1)
 
     def aggregate(self, node_ids, messages):
-        """
-        node_ids: list of node ids in batch
-        messages: dict[node_id] -> list of (message, timestamp)
-        """
-
-        # Deduplicate nodes PROPERLY
         unique_nodes = list(set(node_ids))
         unique_nodes = [n for n in unique_nodes if n in messages and len(messages[n]) > 0]
 
@@ -127,28 +108,18 @@ class WeightedMessageAggregator(nn.Module):
         node_index = []
         timestamps = []
 
-        # Flatten messages while tracking which node they belong to
         for idx, node in enumerate(unique_nodes):
             node_msgs = messages[node]
-
             msg_stack = torch.stack([m[0] for m in node_msgs]).to(self.device)
             all_msgs.append(msg_stack)
-
             node_index.append(torch.full((len(node_msgs),), idx, device=self.device))
-
-            # Use LAST timestamp per node (consistent with TGN)
             timestamps.append(node_msgs[-1][1])
 
-        msg_tensor = torch.cat(all_msgs, dim=0)              # [total_msgs, dim]
-        node_index = torch.cat(node_index, dim=0)            # [total_msgs]
+        msg_tensor = torch.cat(all_msgs, dim=0)
+        node_index = torch.cat(node_index, dim=0)
 
-        # ---- SCORING ----
-        scores = self.scorer(msg_tensor).squeeze(-1)         # [total_msgs]
-
-        # ---- NORMALIZATION (per node) ----
-        weights = scatter_softmax(scores, node_index)        # stable per-node softmax
-
-        # ---- WEIGHTED AGGREGATION ----
+        scores = self.scorer(msg_tensor).squeeze(-1)
+        weights = scatter_softmax(scores, node_index)
         weighted_msgs = msg_tensor * weights.unsqueeze(-1)
 
         aggregated = scatter_add(
@@ -156,110 +127,126 @@ class WeightedMessageAggregator(nn.Module):
             node_index,
             dim=0,
             dim_size=len(unique_nodes)
-        )  # [num_nodes, dim]
+        )
 
         timestamps = torch.stack(timestamps).to(self.device)
-
         return unique_nodes, aggregated, timestamps
 
+
 class AttentionMessageAggregator(MessageAggregator):
-  def __init__(self, device, n_heads: int, message_dim: int, dropout: float=0, post_norm: Optional[bool] = None, learnable: Optional[bool]=None, add_cls_token: Optional[bool]=None):
-    super(AttentionMessageAggregator, self).__init__(device)
-    self.device = device
-    self.n_heads = n_heads
-    self.message_dim = message_dim
-    self.q_proj = nn.Linear(in_features=message_dim, out_features=message_dim) if learnable else nn.Identity()
-    self.k_proj = nn.Linear(in_features=message_dim, out_features=message_dim) if learnable else nn.Identity()
-    self.v_proj = nn.Linear(in_features=message_dim, out_features=message_dim) if learnable else nn.Identity()
+    def __init__(self, device, n_heads: int, message_dim: int, dropout: float = 0,
+                 post_norm: Optional[bool] = None, learnable: Optional[bool] = None,
+                 add_cls_token: Optional[bool] = None):
+        super(AttentionMessageAggregator, self).__init__(device)
+        self.n_heads = n_heads
+        self.message_dim = message_dim
+        self.q_proj = nn.Linear(message_dim, message_dim) if learnable else nn.Identity()
+        self.k_proj = nn.Linear(message_dim, message_dim) if learnable else nn.Identity()
+        self.v_proj = nn.Linear(message_dim, message_dim) if learnable else nn.Identity()
+        self.dropout = nn.Dropout(p=dropout)
+        self.layer_norm = nn.LayerNorm(message_dim) if post_norm else nn.Identity()
+        self.add_cls_token = add_cls_token
 
-    self.dropout = nn.Dropout(p=dropout)
-    self.layer_norm = nn.LayerNorm(normalized_shape=message_dim) if post_norm else nn.Identity()
-    self.add_cls_token = add_cls_token
+    def attention(self, padding_message: torch.Tensor, attention_mask: Optional[torch.Tensor] = None):
+        num_unique_nodes, padding_length, message_dim = padding_message.shape
+        head_dimension = message_dim // self.n_heads
+        if head_dimension * self.n_heads != message_dim:
+            raise ValueError(
+                f"n_heads must divide message_dim evenly, "
+                f"got message_dim={message_dim}, n_heads={self.n_heads}"
+            )
 
-  def attention(self, padding_message: torch.Tensor, attention_mask: Optional[torch.Tensor] = None):
-    num_unique_nodes, padding_length, message_dim = padding_message.shape
-    head_dimension = message_dim // self.n_heads
-    if head_dimension * self.n_heads != message_dim:
-      raise ValueError(f"The head number should be divisible of the dimension of the message, \
-                       but got message dimension{message_dim}, and num heads {self.n_heads}")
-    
-    query_padding_message = self.q_proj(padding_message).view(num_unique_nodes, padding_length, self.n_heads, head_dimension)
-    key_padding_message = self.k_proj(padding_message).view(num_unique_nodes, padding_length, self.n_heads, head_dimension)
-    value_padding_message = self.v_proj(padding_message).view(num_unique_nodes, padding_length, self.n_heads, head_dimension)
+        Q = self.q_proj(padding_message).view(num_unique_nodes, padding_length, self.n_heads, head_dimension).permute(0, 2, 1, 3)
+        K = self.k_proj(padding_message).view(num_unique_nodes, padding_length, self.n_heads, head_dimension).permute(0, 2, 3, 1)
+        V = self.v_proj(padding_message).view(num_unique_nodes, padding_length, self.n_heads, head_dimension).permute(0, 2, 1, 3)
 
-    query_padding_message = query_padding_message.permute(0, 2, 1, 3)
-    key_padding_message = key_padding_message.permute(0, 2, 3, 1)
-    value_padding_message = value_padding_message.permute(0, 2, 1, 3)
-    scale = 1 / torch.sqrt(torch.tensor(message_dim))
-    
-    attn = torch.matmul(query_padding_message, key_padding_message) * scale
-    if attention_mask is not None:
-      if len(attention_mask.shape) == 2:
-        attention_mask = attention_mask.unsqueeze(1).tile(1, padding_length, 1) # [num_unique_nodes, padding_length, padding_length]
-        attention_mask = attention_mask.unsqueeze(1).tile(1, self.n_heads, 1, 1) # [num_unique_nodes, num_heads, padding_length, padding_length]
-      else:
-        raise ValueError("Shape of attention mask should be [num_unique_nodes, padding_length], other shape currently not support")
-      attn = attn.masked_fill(attention_mask==1, -1e9)
-      attn = self.dropout(attn)
+        # FIX 2: cast to float to avoid integer sqrt
+        scale = 1.0 / torch.sqrt(torch.tensor(head_dimension, dtype=torch.float32))
 
-    output = torch.matmul(attn, value_padding_message).permute(0, 2, 1, 3) # [num_unique_nodes, padding_length, self.n_heads, head_dimension]
-    output = output.reshape(num_unique_nodes, -1, message_dim)
-    output = self.layer_norm(output)
-    return output
-  
-  def aggregate(self, node_ids, messages):
-    '''
-    use attention mechanism to aggregate the message for nodes in the batch
-    '''
-    unique_node_ids = np.unique(node_ids)
-    message_dim = self.message_dim
-    unique_timestamps = []
-    unique_messages = []
-    to_update_node_ids = []
+        attn = torch.matmul(Q, K) * scale  # [N, heads, seq, seq]
 
-    length_message = [len(messages[node_id]) for node_id in unique_node_ids]
-    max_length = max(length_message)
-    num_unique_nodes = np.count_nonzero(np.array(length_message))
-    
-    if max_length == 0:
-      return to_update_node_ids, unique_messages, unique_timestamps
+        if attention_mask is not None:
+            if len(attention_mask.shape) == 2:
+                # [N, seq] -> [N, 1, 1, seq] broadcast over heads and query positions
+                mask = attention_mask.unsqueeze(1).unsqueeze(2)
+                attn = attn.masked_fill(mask == 1, -1e9)
+            else:
+                raise ValueError("attention_mask must have shape [num_unique_nodes, padding_length]")
+
+        # FIX 1: apply softmax to get proper attention weights
+        attn = F.softmax(attn, dim=-1)
+
+        # FIX 3: dropout always applies (after softmax), not gated by mask existence
+        attn = self.dropout(attn)
+
+        output = torch.matmul(attn, V).permute(0, 2, 1, 3)  # [N, seq, heads, head_dim]
+        output = output.reshape(num_unique_nodes, padding_length, message_dim)
+        output = self.layer_norm(output)
+        return output
+
+    def aggregate(self, node_ids, messages):
+        unique_node_ids = np.unique(node_ids)
+        message_dim = self.message_dim
+        unique_timestamps = []
+        unique_messages = []
+        to_update_node_ids = []
+
+        # FIX 4: compute num_unique_nodes from nodes that actually have messages
+        valid_node_ids = [nid for nid in unique_node_ids if len(messages[nid]) > 0]
+        num_unique_nodes = len(valid_node_ids)
+
+        if num_unique_nodes == 0:
+            return to_update_node_ids, unique_messages, unique_timestamps
+
+        length_message = [len(messages[nid]) for nid in valid_node_ids]
+        max_length = max(length_message)
+
+        # FIX 4 cont: allocate tensors sized to valid nodes only, iterate valid_node_ids
+        attention_mask = torch.zeros(num_unique_nodes, max_length, device=self.device)
+        padding_message = torch.zeros(num_unique_nodes, max_length, message_dim, device=self.device)
+
+        for idx, node_id in enumerate(valid_node_ids):
+            to_update_node_ids.append(node_id)
+            length_per_message = len(messages[node_id])
+            attention_mask[idx, length_per_message:] = 1
+            padding_message[idx, :length_per_message] = torch.stack(
+                [m[0] for m in messages[node_id]], dim=0
+            )
+            unique_timestamps.append(messages[node_id][-1][1])
+
+        if self.add_cls_token:
+            cls_message = torch.zeros(num_unique_nodes, 1, message_dim, device=self.device)
+            cls_mask = torch.zeros(num_unique_nodes, 1, device=self.device)
+            padding_message_with_cls = torch.cat((cls_message, padding_message), dim=1)
+            attention_mask_with_cls = torch.cat((cls_mask, attention_mask), dim=1)
+            updated = self.attention(padding_message_with_cls, attention_mask_with_cls)
+            unique_messages = updated[:, 0, :].squeeze(1)
+        else:
+            updated = self.attention(padding_message, attention_mask)
+            unique_messages = F.avg_pool1d(
+                updated.transpose(-1, -2),
+                kernel_size=max_length,
+                stride=max_length
+            ).squeeze(-1)
+
+        unique_timestamps = torch.stack(unique_timestamps) if to_update_node_ids else []
+        return to_update_node_ids, unique_messages, unique_timestamps
+
+
+# FIX 7: pass through dropout and post_norm params
+def get_message_aggregator(aggregator_type, device, n_heads, message_dim,
+                            learnable, add_cls_token, dropout=0.0, post_norm=False):
+    if aggregator_type == "last":
+        return LastMessageAggregator(device=device)
+    elif aggregator_type == "mean":
+        return MeanMessageAggregator(device=device)
+    elif aggregator_type == "weightedmean":
+        return WeightedMessageAggregator(device=device, message_dim=message_dim)
+    elif aggregator_type == "attention":
+        return AttentionMessageAggregator(
+            device=device, n_heads=n_heads, message_dim=message_dim,
+            dropout=dropout, post_norm=post_norm,
+            learnable=learnable, add_cls_token=add_cls_token
+        )
     else:
-      # generate attention mask and padding_message
-      attention_mask = torch.zeros(num_unique_nodes, max_length, device=self.device)
-      padding_message = torch.zeros(num_unique_nodes, max_length, message_dim, device=self.device)
-      idx = 0
-      for node_id in unique_node_ids:
-        if len(messages[node_id]) > 0:
-          to_update_node_ids.append(node_id)
-          length_per_message = len(messages[node_id])
-          attention_mask[idx, length_per_message:] = 1
-          padding_message[idx, range(length_per_message)] = torch.stack([m[0] for m in messages[node_id]], dim=0)
-          unique_timestamps.append(messages[node_id][-1][1])
-          idx += 1
-        
-      if self.add_cls_token:
-        cls_message = torch.zeros(num_unique_nodes, 1, message_dim, device=self.device)
-        cls_attention_mask = torch.zeros(num_unique_nodes, 1, device=self.device)
-        padding_message_with_cls_token = torch.concat((cls_message, padding_message), dim=1)
-        attention_mask_with_cls_token = torch.concat((cls_attention_mask, attention_mask), dim=1)
-        updated_attention_message = self.attention(padding_message_with_cls_token, attention_mask_with_cls_token) # [num_unique_nodes, max_length, message_dim]
-        unique_messages = updated_attention_message[:, 0, :].squeeze(1)
-      else:
-        updated_attention_message = self.attention(padding_message, attention_mask)
-        unique_messages = F.avg_pool1d(updated_attention_message.transpose(-1, -2), kernel_size=max_length, stride=max_length).squeeze(-1)
-        
-      unique_timestamps = torch.stack(unique_timestamps) if len(to_update_node_ids) > 0 else []
-      return to_update_node_ids, unique_messages, unique_timestamps
-
-
-def get_message_aggregator(aggregator_type, device, n_heads, message_dim, learnable, add_cls_token):
-  if aggregator_type == "last":
-    return LastMessageAggregator(device=device)
-  elif aggregator_type == "mean":
-    return MeanMessageAggregator(device=device)
-  elif aggregator_type == "weightedmean":
-    return WeightedMessageAggregator(device=device, message_dim=message_dim)
-  elif aggregator_type == "attention":
-    return AttentionMessageAggregator(device=device, n_heads=n_heads, message_dim=message_dim, learnable=learnable, add_cls_token=add_cls_token)
-  else:
-    raise ValueError("Message aggregator {} not implemented".format(aggregator_type))
+        raise ValueError(f"Message aggregator {aggregator_type} not implemented")
