@@ -16,48 +16,37 @@ def eval_edge_prediction(model, negative_edge_sampler, data, n_neighbors, batch_
     """
     Evaluate link prediction.
 
-    Returns:
-    AP
-    AUC
-    Accuracy
-    Precision
-    Recall
-    F1
-    MRR
-    Hits@1
+    Returns
+    -------
+    ap, auc, acc, precision, recall, f1, mrr
     """
 
     assert negative_edge_sampler.seed is not None
     negative_edge_sampler.reset_random_state()
 
-    val_ap = []
-    val_auc = []
-
-    val_acc = []
+    val_ap   = []
+    val_auc  = []
+    val_acc  = []
     val_prec = []
-    val_rec = []
-    val_f1 = []
-
-    val_mrr = []
-    hits1 = []
-    hits5 = []
-    hits10 = []
+    val_rec  = []
+    val_f1   = []
+    val_mrr  = []
 
     with torch.no_grad():
         model = model.eval()
 
         num_instance = len(data.sources)
-        num_batch = math.ceil(num_instance / batch_size)
+        num_batch    = math.ceil(num_instance / batch_size)
 
         for k in range(num_batch):
 
             s_idx = k * batch_size
             e_idx = min(num_instance, s_idx + batch_size)
 
-            sources_batch = data.sources[s_idx:e_idx]
+            sources_batch      = data.sources[s_idx:e_idx]
             destinations_batch = data.destinations[s_idx:e_idx]
-            timestamps_batch = data.timestamps[s_idx:e_idx]
-            edge_idxs_batch = data.edge_idxs[s_idx:e_idx]
+            timestamps_batch   = data.timestamps[s_idx:e_idx]
+            edge_idxs_batch    = data.edge_idxs[s_idx:e_idx]
 
             size = len(sources_batch)
 
@@ -72,44 +61,28 @@ def eval_edge_prediction(model, negative_edge_sampler, data, n_neighbors, batch_
                 n_neighbors
             )
 
-            pos_prob = pos_prob.squeeze().cpu().numpy()
-            neg_prob = neg_prob.squeeze().cpu().numpy()
+            pos_prob_np = pos_prob.squeeze().cpu().numpy()
+            neg_prob_np = neg_prob.squeeze().cpu().numpy()
 
-            pred_score = np.concatenate([pos_prob, neg_prob])
+            pred_score = np.concatenate([pos_prob_np, neg_prob_np])
             true_label = np.concatenate([np.ones(size), np.zeros(size)])
-
             pred_label = (pred_score > 0.5).astype(int)
 
-            # Standard classification metrics
             val_ap.append(average_precision_score(true_label, pred_score))
             val_auc.append(roc_auc_score(true_label, pred_score))
             val_acc.append(accuracy_score(true_label, pred_label))
-            val_prec.append(precision_score(true_label, pred_label))
-            val_rec.append(recall_score(true_label, pred_label))
-            val_f1.append(f1_score(true_label, pred_label))
+            val_prec.append(precision_score(true_label, pred_label, zero_division=0))
+            val_rec.append(recall_score(true_label, pred_label, zero_division=0))
+            val_f1.append(f1_score(true_label, pred_label, zero_division=0))
 
-            # Ranking metrics
+            # MRR — 1-negative setting (rank is always 1 or 2)
             batch_mrr = []
-            batch_hits1 = []
-            batch_hits5 = []
-            batch_hits10 = []
-
             for i in range(size):
-                pos = pos_prob[i]
-                neg = neg_prob[i]
-
-                scores = np.array([pos, neg])
-                rank = (scores > pos).sum() + 1
-
+                pos  = pos_prob_np[i]
+                neg  = neg_prob_np[i]
+                rank = (np.array([pos, neg]) > pos).sum() + 1
                 batch_mrr.append(1.0 / rank)
-                batch_hits1.append(1 if rank <= 1 else 0)
-                batch_hits5.append(1 if rank <= 5 else 0)
-                batch_hits10.append(1 if rank <= 10 else 0)
-
             val_mrr.append(np.mean(batch_mrr))
-            hits1.append(np.mean(batch_hits1))
-            hits5.append(np.mean(batch_hits5))
-            hits10.append(np.mean(batch_hits10))
 
     return (
         np.mean(val_ap),
@@ -119,7 +92,4 @@ def eval_edge_prediction(model, negative_edge_sampler, data, n_neighbors, batch_
         np.mean(val_rec),
         np.mean(val_f1),
         np.mean(val_mrr),
-        np.mean(hits1),
-        np.mean(hits5),
-        np.mean(hits10),
     )
