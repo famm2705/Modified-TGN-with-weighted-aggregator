@@ -23,7 +23,10 @@ class TGN(torch.nn.Module):
                memory_updater_type="gru",
                use_destination_embedding_in_message=False,
                use_source_embedding_in_message=False,
-               dyrep=False, learnable=False, add_cls_token=None):
+               dyrep=False, learnable=False, add_cls_token=None,
+               # FIX 3: expose aggregator-specific hyper-parameters so they are forwarded
+               # to get_message_aggregator instead of silently dropped.
+               aggregator_post_norm=False):
     super(TGN, self).__init__()
 
     self.n_layers = n_layers
@@ -64,13 +67,19 @@ class TGN(torch.nn.Module):
                            input_dimension=message_dimension,
                            message_dimension=message_dimension,
                            device=device)
+      # FIX 3: pass dropout and post_norm through so AttentionMessageAggregator and
+      # WeightedMessageAggregator receive the correct training-time configuration.
+      # Previously these were silently dropped, meaning attention always used dropout=0
+      # and no layer norm regardless of the CLI flags.
       self.message_aggregator = get_message_aggregator(
         aggregator_type=aggregator_type,
         n_heads=n_heads,
         message_dim=message_dimension,
         device=device,
         learnable=learnable,
-        add_cls_token=add_cls_token
+        add_cls_token=add_cls_token,
+        dropout=dropout,
+        post_norm=aggregator_post_norm,
       )
       self.message_function = get_message_function(module_type=message_function,
                                                    raw_message_dimension=raw_message_dimension,
