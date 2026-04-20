@@ -222,12 +222,12 @@ def generate_dataset(num_edges, sparsity_level="sparse", mode="mixed"):
         # ------------------------------------------------------------------
         attacker = np.random.choice(devices)
         target = np.random.choice(servers)
-        JUNK_RATIO = 0.80   # 80% of attacker's messages are pure noise
+        JUNK_RATIO = 0.92   # 92% of attacker's messages are pure noise
 
         attack_start = int(0.25 * n)
         attack_end = int(0.90 * n)
 
-        signal_vec = np.array([2.5, -2.0, 1.8, -1.5, 2.2, -1.9])  # strong directional signal
+        signal_vec = np.array([4.0, -3.5, 3.2, -2.8, 3.8, -3.2])  # strong directional signal
 
         for i in range(attack_start, attack_end):
             if np.random.rand() < 0.3:
@@ -241,7 +241,7 @@ def generate_dataset(num_edges, sparsity_level="sparse", mode="mixed"):
                 labels[i] = 0
             else:
                 # Signal message — consistent anomalous direction
-                features_arr[i] = signal_vec + np.random.normal(0, 0.2, feature_dim)
+                features_arr[i] = signal_vec + np.random.normal(0, 0.05, feature_dim)
                 if i > int(0.55 * n):
                     labels[i] = 1
 
