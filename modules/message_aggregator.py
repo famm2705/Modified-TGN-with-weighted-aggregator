@@ -105,18 +105,18 @@ class MeanMessageAggregator(MessageAggregator):
 
 
 class WeightedMessageAggregator(MessageAggregator):
-    def __init__(self, message_dim, device):
+   def __init__(self, message_dim, device):
         super().__init__(device)
-        # FIX 2: LayerNorm before scoring stabilises message magnitudes early in training,
-        # preventing softmax weights from collapsing to near-uniform or one-hot before the
-        # scorer has had a chance to learn meaningful distinctions.
         self.norm = nn.LayerNorm(message_dim)
-        self.scorer = nn.Linear(message_dim, 1)
-
-    def aggregate(self, node_ids, messages):
-        # FIX 1 applied: deterministic ordering + safe defaultdict access.
-        # Previously used list(set(node_ids)) which is non-deterministic; the random permutation
-        # of unique_nodes caused aggregated rows to be written to wrong memory slots every call.
+        # CHANGE FROM: single linear scorer
+        # TO: two-layer MLP scorer — gives the scorer enough capacity
+        # to learn non-linear separation between signal and junk
+        self.scorer = nn.Sequential(
+            nn.Linear(message_dim, message_dim // 2),
+            nn.ReLU(),
+            nn.Linear(message_dim // 2, 1)
+        )
+     def aggregate(self, node_ids, messages):
         unique_nodes = self._get_valid_unique_nodes(node_ids, messages)
 
         if len(unique_nodes) == 0:
@@ -136,21 +136,24 @@ class WeightedMessageAggregator(MessageAggregator):
         msg_tensor = torch.cat(all_msgs, dim=0)
         node_index = torch.cat(node_index, dim=0)
 
-        # FIX 2 applied: normalise before scoring
+        # Weighted aggregation
         scores = self.scorer(self.norm(msg_tensor)).squeeze(-1)
         weights = scatter_softmax(scores, node_index)
         weighted_msgs = msg_tensor * weights.unsqueeze(-1)
-
-        aggregated = scatter_add(
-            weighted_msgs,
-            node_index,
-            dim=0,
-            dim_size=len(unique_nodes)
+        aggregated_weighted = scatter_add(
+            weighted_msgs, node_index, dim=0, dim_size=len(unique_nodes)
         )
+
+        # ADDED: residual mean — blends weighted result with simple mean
+        # so early training is stable while scorer weights are random
+        aggregated_mean = scatter_mean(
+            msg_tensor, node_index, dim=0, dim_size=len(unique_nodes)
+        )
+        aggregated = 0.8 * aggregated_weighted + 0.2 * aggregated_mean
 
         timestamps = torch.stack(timestamps).to(self.device)
         return unique_nodes, aggregated, timestamps
-
+        
 
 class AttentionMessageAggregator(MessageAggregator):
     def __init__(self, device, n_heads: int, message_dim: int, dropout: float = 0,
