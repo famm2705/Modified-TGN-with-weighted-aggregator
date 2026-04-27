@@ -31,17 +31,13 @@ class MessageAggregator(torch.nn.Module):
             node_id_to_messages[node_id].append((messages[i], timestamps[i]))
         return node_id_to_messages
 
-    # FIX 1 (shared utility): deterministic deduplication that respects messages dict safely.
-    # Using .get() avoids the defaultdict side-effect of creating empty entries on key lookup,
-    # and dict.fromkeys preserves insertion order (unlike set()) so aggregated rows always align
-    # with the returned unique_nodes list.
     def _get_valid_unique_nodes(self, node_ids, messages):
         """
         Return an ordered, deduplicated list of node_ids that have at least one message.
         - Uses dict.fromkeys for deterministic ordering (set() is non-deterministic).
         - Uses messages.get() to avoid defaultdict side-effects.
         """
-        seen = dict.fromkeys(node_ids)          # preserves first-seen order, O(n)
+        seen = dict.fromkeys(node_ids)
         return [n for n in seen if len(messages.get(n) or []) > 0]
 
 
@@ -51,7 +47,6 @@ class LastMessageAggregator(MessageAggregator):
 
     def aggregate(self, node_ids, messages):
         """Only keep the last message for each node"""
-        # FIX 1 applied: deterministic ordering + safe defaultdict access
         unique_node_ids = self._get_valid_unique_nodes(node_ids, messages)
         unique_messages = []
         unique_timestamps = []
@@ -73,7 +68,6 @@ class MeanMessageAggregator(MessageAggregator):
         super().__init__(device)
 
     def aggregate(self, node_ids, messages):
-        # FIX 1 applied: deterministic ordering + safe defaultdict access
         unique_nodes = self._get_valid_unique_nodes(node_ids, messages)
 
         if len(unique_nodes) == 0:
@@ -105,55 +99,50 @@ class MeanMessageAggregator(MessageAggregator):
 
 
 class WeightedMessageAggregator(MessageAggregator):
-   def __init__(self, message_dim, device):
+    def __init__(self, message_dim, device):
         super().__init__(device)
         self.norm = nn.LayerNorm(message_dim)
-        # CHANGE FROM: single linear scorer
-        # TO: two-layer MLP scorer — gives the scorer enough capacity
-        # to learn non-linear separation between signal and junk
         self.scorer = nn.Sequential(
             nn.Linear(message_dim, message_dim // 2),
             nn.ReLU(),
             nn.Linear(message_dim // 2, 1)
         )
-        def aggregate(self, node_ids, messages):
-            unique_nodes = self._get_valid_unique_nodes(node_ids, messages)
 
-            if len(unique_nodes) == 0:
-                return [], torch.empty((0,), device=self.device), torch.empty((0,), device=self.device)
+    def aggregate(self, node_ids, messages):
+        unique_nodes = self._get_valid_unique_nodes(node_ids, messages)
 
-            all_msgs = []
-            node_index = []
-            timestamps = []
+        if len(unique_nodes) == 0:
+            return [], torch.empty((0,), device=self.device), torch.empty((0,), device=self.device)
 
-            for idx, node in enumerate(unique_nodes):
-                node_msgs = messages[node]
-                msg_stack = torch.stack([m[0] for m in node_msgs]).to(self.device)
-                all_msgs.append(msg_stack)
-                node_index.append(torch.full((len(node_msgs),), idx, device=self.device))
-                timestamps.append(node_msgs[-1][1])
+        all_msgs = []
+        node_index = []
+        timestamps = []
 
-            msg_tensor = torch.cat(all_msgs, dim=0)
-            node_index = torch.cat(node_index, dim=0)
+        for idx, node in enumerate(unique_nodes):
+            node_msgs = messages[node]
+            msg_stack = torch.stack([m[0] for m in node_msgs]).to(self.device)
+            all_msgs.append(msg_stack)
+            node_index.append(torch.full((len(node_msgs),), idx, device=self.device))
+            timestamps.append(node_msgs[-1][1])
 
-            # Weighted aggregation
-            scores = self.scorer(self.norm(msg_tensor)).squeeze(-1)
-            weights = scatter_softmax(scores, node_index)
-            weighted_msgs = msg_tensor * weights.unsqueeze(-1)
-            aggregated_weighted = scatter_add(
-                weighted_msgs, node_index, dim=0, dim_size=len(unique_nodes)
-            )
+        msg_tensor = torch.cat(all_msgs, dim=0)
+        node_index = torch.cat(node_index, dim=0)
 
-            # ADDED: residual mean — blends weighted result with simple mean
-            # so early training is stable while scorer weights are random
-            aggregated_mean = scatter_mean(
-                msg_tensor, node_index, dim=0, dim_size=len(unique_nodes)
-            )
-            aggregated = 0.8 * aggregated_weighted + 0.2 * aggregated_mean
+        scores = self.scorer(self.norm(msg_tensor)).squeeze(-1)
+        weights = scatter_softmax(scores, node_index)
+        weighted_msgs = msg_tensor * weights.unsqueeze(-1)
 
-            timestamps = torch.stack(timestamps).to(self.device)
-            return unique_nodes, aggregated, timestamps
-            
+        aggregated_weighted = scatter_add(
+            weighted_msgs, node_index, dim=0, dim_size=len(unique_nodes)
+        )
+        aggregated_mean = scatter_mean(
+            msg_tensor, node_index, dim=0, dim_size=len(unique_nodes)
+        )
+        aggregated = 0.5 * aggregated_weighted + 0.5 * aggregated_mean
+
+        timestamps = torch.stack(timestamps).to(self.device)
+        return unique_nodes, aggregated, timestamps
+
 
 class AttentionMessageAggregator(MessageAggregator):
     def __init__(self, device, n_heads: int, message_dim: int, dropout: float = 0,
@@ -183,7 +172,7 @@ class AttentionMessageAggregator(MessageAggregator):
         V = self.v_proj(padding_message).view(num_unique_nodes, padding_length, self.n_heads, head_dimension).permute(0, 2, 1, 3)
 
         scale = 1.0 / torch.sqrt(torch.tensor(head_dimension, dtype=torch.float32))
-        attn = torch.matmul(Q, K) * scale  # [N, heads, seq, seq]
+        attn = torch.matmul(Q, K) * scale
 
         if attention_mask is not None:
             if len(attention_mask.shape) == 2:
@@ -195,13 +184,12 @@ class AttentionMessageAggregator(MessageAggregator):
         attn = F.softmax(attn, dim=-1)
         attn = self.dropout(attn)
 
-        output = torch.matmul(attn, V).permute(0, 2, 1, 3)  # [N, seq, heads, head_dim]
+        output = torch.matmul(attn, V).permute(0, 2, 1, 3)
         output = output.reshape(num_unique_nodes, padding_length, message_dim)
         output = self.layer_norm(output)
         return output
 
     def aggregate(self, node_ids, messages):
-        # FIX 1 applied: deterministic ordering + safe defaultdict access
         valid_node_ids = self._get_valid_unique_nodes(node_ids, messages)
         message_dim = self.message_dim
         unique_timestamps = []
