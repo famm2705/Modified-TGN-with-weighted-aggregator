@@ -10,11 +10,11 @@ from pathlib import Path
 
 import torch
 import numpy as np
-from sklearn.metrics import roc_auc_score
 
 from tgn import TGN
 from utils.utils import EarlyStopMonitor, get_neighbor_finder, MLP
 from utils.data_processing import compute_time_statistics, get_data_node_classification
+from evaluation.evaluation import eval_node_classification
 
 random.seed(0)
 np.random.seed(0)
@@ -95,39 +95,6 @@ TIME_DIM = args.time_dim
 USE_MEMORY = args.use_memory
 MESSAGE_DIM = args.message_dim
 MEMORY_DIM = args.memory_dim
-
-
-def eval_node_classification(tgn, decoder, data, batch_size, n_neighbors):
-  pred_prob = np.zeros(len(data.sources))
-  num_instance = len(data.sources)
-  num_batch = math.ceil(num_instance / batch_size)
-
-  with torch.no_grad():
-    decoder.eval()
-    tgn.eval()
-    for k in range(num_batch):
-      s_idx = k * batch_size
-      e_idx = min(num_instance, s_idx + batch_size)
-
-      sources_batch = data.sources[s_idx: e_idx]
-      destinations_batch = data.destinations[s_idx: e_idx]
-      timestamps_batch = data.timestamps[s_idx: e_idx]
-      edge_idxs_batch = data.edge_idxs[s_idx: e_idx]
-
-      source_embedding, _, _ = tgn.compute_temporal_embeddings(sources_batch,
-                                                               destinations_batch,
-                                                               destinations_batch,
-                                                               timestamps_batch,
-                                                               edge_idxs_batch,
-                                                               n_neighbors)
-      pred_prob_batch = decoder(source_embedding).sigmoid()
-      pred_prob[s_idx: e_idx] = pred_prob_batch.view(-1).cpu().numpy()
-
-  if len(np.unique(data.labels)) < 2:
-    return float("nan")
-
-  return roc_auc_score(data.labels, pred_prob)
-
 
 MODEL_BASE_PATH = "/content/drive/MyDrive/tgn_models"
 RESULTS_PATH = "/content/drive/MyDrive/tgn_results"
@@ -245,7 +212,7 @@ for i in range(args.n_runs):
       sources_batch = train_data.sources[s_idx: e_idx]
       destinations_batch = train_data.destinations[s_idx: e_idx]
       timestamps_batch = train_data.timestamps[s_idx: e_idx]
-      edge_idxs_batch = train_data.edge_idxs[s_idx: e_idx]
+      edge_idxs_batch = full_data.edge_idxs[s_idx: e_idx]
       labels_batch = train_data.labels[s_idx: e_idx]
 
       size = len(sources_batch)
@@ -269,7 +236,7 @@ for i in range(args.n_runs):
     epoch_time = time.time() - start_epoch
     epoch_times.append(epoch_time)
 
-    val_auc = eval_node_classification(tgn, decoder, val_data, BATCH_SIZE,
+    val_auc = eval_node_classification(tgn, decoder, val_data, full_data.edge_idxs, BATCH_SIZE,
                                        n_neighbors=NUM_NEIGHBORS)
     val_aucs.append(val_auc)
     total_epoch_time = time.time() - start_epoch
@@ -306,7 +273,7 @@ for i in range(args.n_runs):
     logger.info(f'Loaded the best model at epoch {early_stopper.best_epoch} for inference')
     decoder.eval()
 
-    test_auc = eval_node_classification(tgn, decoder, test_data, BATCH_SIZE,
+    test_auc = eval_node_classification(tgn, decoder, test_data, full_data.edge_idxs, BATCH_SIZE,
                                         n_neighbors=NUM_NEIGHBORS)
   else:
     # If we are not using a validation set, the test performance is just the performance computed
