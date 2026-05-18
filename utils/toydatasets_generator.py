@@ -160,146 +160,144 @@ def generate_dataset(num_edges, sparsity_level="sparse", mode="mixed"):
     # Attack injection (mode-specific)
     # ----------------------
 
+    # Spread attack episodes across the whole timeline so the default
+    # 70/15/15 time split contains positives in train, validation, and test.
+    attack_windows = [(0.18, 0.30), (0.54, 0.66), (0.73, 0.82), (0.88, 0.96)]
+
     if mode == "markov":
         # ------------------------------------------------------------------
-        # Single abrupt state-change attack.
-        # One node's state jumps discontinuously — only the LAST message
-        # reflects the compromised state. Prior messages are misleading.
-        # Mean aggregation would dilute the signal; last sees it clearly.
+        # Abrupt state-change attacks.
+        # A few devices change state sharply near the end of each episode.
+        # Prior messages in the same batch are deliberately stale, so the
+        # latest message remains the clearest signal.
         # ------------------------------------------------------------------
-        attacker = np.random.choice(devices)
-        target = np.random.choice(servers)
+        attackers = np.random.choice(devices, size=3, replace=False)
+        targets = np.random.choice(servers, size=3, replace=False)
+        base_state = np.array([3.0, -3.0, 3.0, -3.0, 3.0, -3.0])
 
-        attack_start = int(0.6 * n)
-        attack_end = int(0.9 * n)
+        for episode, (start_frac, end_frac) in enumerate(attack_windows):
+            start = int(start_frac * n)
+            end = max(start + 1, int(end_frac * n))
+            attacker = attackers[episode % len(attackers)]
+            target = targets[episode % len(targets)]
+            compromised_state = base_state * (1 if episode % 2 == 0 else -1)
 
-        # Before attack: attacker has benign drifted state
-        # After attack: abrupt jump to anomalous feature region
-        compromised_state = np.array([3.0, -3.0, 3.0, -3.0, 3.0, -3.0])
+            for i in range(start, min(end, n)):
+                if np.random.rand() < 0.35:
+                    continue
+                sources[i] = attacker
+                destinations[i] = target
+                progress = (i - start) / max(1, end - start)
 
-        for i in range(attack_start, attack_end):
-            if np.random.rand() < 0.4:
-                continue
-            sources[i] = attacker
-            destinations[i] = target
-            # Features jump to compromised region and stay there — Markovian
-            progress = (i - attack_start) / (attack_end - attack_start)
-            features_arr[i] = compromised_state * progress + np.random.normal(0, 0.1, feature_dim)
-            if progress > 0.6:
-                labels[i] = 1
+                if progress < 0.45:
+                    # Still mostly benign, making older messages misleading.
+                    features_arr[i] = np.random.normal(0, 0.35, feature_dim)
+                    labels[i] = 0
+                else:
+                    features_arr[i] = compromised_state + np.random.normal(0, 0.12, feature_dim)
+                    labels[i] = 1
 
     elif mode == "iid":
         # ------------------------------------------------------------------
-        # Slow statistical anomaly — attack features are a shifted Gaussian.
-        # No temporal structure; the shift is detectable only in aggregate.
-        # Mean aggregation naturally accumulates the shifted signal over
-        # many messages. Last is unreliable (one noisy sample); attention
-        # has nothing sequential to attend to.
+        # Slow statistical anomaly.
+        # Many weakly shifted samples appear in every split. No individual
+        # event is very strong, but the average over repeated messages is.
         # ------------------------------------------------------------------
         attack_nodes = np.random.choice(devices, size=12, replace=False)
-        target_server = np.random.choice(servers)
+        target_servers = np.random.choice(servers, size=3, replace=False)
 
-        attack_start = int(0.3 * n)
-        attack_end = int(0.85 * n)
+        for episode, (start_frac, end_frac) in enumerate(attack_windows):
+            start = int(start_frac * n)
+            end = max(start + 1, int(end_frac * n))
+            target = target_servers[episode % len(target_servers)]
 
-        for i in range(attack_start, attack_end):
-            if np.random.rand() < 0.5:
-                continue
-            sources[i] = np.random.choice(attack_nodes)
-            destinations[i] = target_server
-            # Consistently shifted features — detectable only in aggregate mean
-            features_arr[i] = np.random.normal(0.4, 0.9, feature_dim)
-            if i > int(0.6 * n):
-                labels[i] = 1
+            for i in range(start, min(end, n)):
+                if np.random.rand() < 0.35:
+                    continue
+                progress = (i - start) / max(1, end - start)
+                sources[i] = np.random.choice(attack_nodes)
+                destinations[i] = target
+                features_arr[i] = np.random.normal(0.45, 0.85, feature_dim)
+                labels[i] = int(progress > 0.40)
 
     elif mode == "mixed_noise":
         # ------------------------------------------------------------------
-        # Signal buried in noise. Attack node sends mostly junk messages
-        # with occasional high-signal messages.
-        # WeightedMessageAggregator should learn to upweight the signal
-        # messages and suppress the junk via the learned scorer.
-        # Mean dilutes the signal; last may pick a junk message.
+        # Rare signal buried in noise.
+        # Multiple compromised devices send mostly junk messages, with enough
+        # high-signal anomalous messages in every split to make evaluation
+        # stable across repeated runs.
         # ------------------------------------------------------------------
-        attacker = np.random.choice(devices)
-        target = np.random.choice(servers)
-        JUNK_RATIO = 0.92   # 92% of attacker's messages are pure noise
+        attackers = np.random.choice(devices, size=3, replace=False)
+        targets = np.random.choice(servers, size=3, replace=False)
+        junk_ratio = 0.82
+        signal_vecs = [
+            np.array([4.0, -3.5, 3.2, -2.8, 3.8, -3.2]),
+            np.array([-3.6, 3.4, -3.1, 2.9, -3.5, 3.0]),
+            np.array([3.2, 3.0, -3.4, -3.2, 2.8, -2.9]),
+        ]
 
-        attack_start = int(0.25 * n)
-        attack_end = int(0.90 * n)
+        for episode, (start_frac, end_frac) in enumerate(attack_windows):
+            start = int(start_frac * n)
+            end = max(start + 1, int(end_frac * n))
+            attacker = attackers[episode % len(attackers)]
+            target = targets[episode % len(targets)]
+            signal_vec = signal_vecs[episode % len(signal_vecs)]
 
-        signal_vec = np.array([4.0, -3.5, 3.2, -2.8, 3.8, -3.2])  # strong directional signal
+            for i in range(start, min(end, n)):
+                if np.random.rand() < 0.15:
+                    continue
+                progress = (i - start) / max(1, end - start)
+                sources[i] = attacker
+                destinations[i] = target
 
-        for i in range(attack_start, attack_end):
-            if np.random.rand() < 0.3:
-                continue
-            sources[i] = attacker
-            destinations[i] = target
-
-            if np.random.rand() < JUNK_RATIO:
-                # Junk message — pure noise, no label
-                features_arr[i] = np.random.normal(0, 1.5, feature_dim)
-                labels[i] = 0
-            else:
-                # Signal message — consistent anomalous direction
-                features_arr[i] = signal_vec + np.random.normal(0, 0.05, feature_dim)
-                if i > int(0.55 * n):
-                    labels[i] = 1
+                if np.random.rand() < junk_ratio:
+                    features_arr[i] = np.random.normal(0, 1.5, feature_dim)
+                    labels[i] = 0
+                else:
+                    features_arr[i] = signal_vec + np.random.normal(0, 0.08, feature_dim)
+                    labels[i] = int(progress > 0.15)
 
     elif mode == "sequential":
         # ------------------------------------------------------------------
         # Three-phase ordered attack: probe → escalate → exfiltrate.
-        # Each phase produces a DISTINCT feature signature.
-        # The label fires only when all three phases have occurred in order.
-        # Attention can learn to weight the "escalate" message highly only
-        # when preceded by "probe". Mean and last see only one phase at a time.
+        # The ordered sequence appears across train/val/test. Wrong-order
+        # decoys use the same phase signatures but should not be positive.
+        # Several attacker-target pairs prevent one pair from dominating.
         # ------------------------------------------------------------------
-        attacker = np.random.choice(devices)
-        target = np.random.choice(servers)
+        attackers = np.random.choice(devices, size=4, replace=False)
+        targets = np.random.choice(servers, size=4, replace=False)
 
-        # Distinct feature vectors for each phase — orthogonal in feature space
         phase_features = {
             "probe":       np.array([ 2.0,  0.0,  0.0, -1.0,  0.5,  0.0]),
             "escalate":    np.array([ 0.0,  2.5,  0.0,  0.0, -1.0,  0.5]),
             "exfiltrate":  np.array([ 0.0,  0.0,  3.0,  0.5,  0.0, -2.0]),
         }
 
-        n_cycles = 6   # number of full probe→escalate→exfiltrate cycles
-        cycle_length = (n - int(0.2 * n)) // n_cycles
-        attack_base = int(0.2 * n)
+        attack_start = int(0.12 * n)
+        attack_end = int(0.98 * n)
+        n_cycles = 10
+        cycle_length = max(1, (attack_end - attack_start) // n_cycles)
 
         for cycle in range(n_cycles):
-            base = attack_base + cycle * cycle_length
-            phase_size = max(1, cycle_length // 4)
+            base = attack_start + cycle * cycle_length
+            phase_size = max(4, cycle_length // 5)
+            attacker = attackers[cycle % len(attackers)]
+            target = targets[cycle % len(targets)]
+            ordered = cycle % 4 != 1
+            phases = ["probe", "escalate", "exfiltrate"] if ordered else [
+                "probe", "exfiltrate", "escalate"
+            ]
 
-            # Phase 1: probe (early in cycle)
-            for i in range(base, min(base + phase_size, n)):
-                if np.random.rand() < 0.35:
-                    continue
-                sources[i] = attacker
-                destinations[i] = target
-                features_arr[i] = phase_features["probe"] + np.random.normal(0, 0.15, feature_dim)
-                labels[i] = 0   # probe alone is not yet an attack
-
-            # Phase 2: escalate (middle of cycle)
-            mid = base + phase_size
-            for i in range(mid, min(mid + phase_size, n)):
-                if np.random.rand() < 0.35:
-                    continue
-                sources[i] = attacker
-                destinations[i] = target
-                features_arr[i] = phase_features["escalate"] + np.random.normal(0, 0.15, feature_dim)
-                labels[i] = 0   # escalate alone is not yet an attack
-
-            # Phase 3: exfiltrate (late in cycle — label fires here)
-            late = base + 2 * phase_size
-            for i in range(late, min(late + phase_size, n)):
-                if np.random.rand() < 0.35:
-                    continue
-                sources[i] = attacker
-                destinations[i] = target
-                features_arr[i] = phase_features["exfiltrate"] + np.random.normal(0, 0.15, feature_dim)
-                if cycle >= 2:   # label only fires after pattern has repeated enough
-                    labels[i] = 1
+            for phase_idx, phase in enumerate(phases):
+                phase_start = base + phase_idx * (phase_size + max(1, phase_size // 2))
+                phase_end = min(phase_start + phase_size, n)
+                for i in range(phase_start, phase_end):
+                    if np.random.rand() < 0.20:
+                        continue
+                    sources[i] = attacker
+                    destinations[i] = target
+                    features_arr[i] = phase_features[phase] + np.random.normal(0, 0.15, feature_dim)
+                    labels[i] = int(ordered and phase == "exfiltrate" and cycle >= 1)
 
     # ----------------------
     # Build DataFrame
