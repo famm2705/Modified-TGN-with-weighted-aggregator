@@ -261,7 +261,7 @@ for i in range(args.n_runs):
         pos_prob, neg_prob = tgn.compute_edge_probabilities(sources_batch, destinations_batch, negatives_batch,
                                                             timestamps_batch, edge_idxs_batch, NUM_NEIGHBORS)
 
-        loss += criterion(pos_prob.squeeze(), pos_label) + criterion(neg_prob.squeeze(), neg_label)
+        loss += criterion(pos_prob.view(-1), pos_label) + criterion(neg_prob.view(-1), neg_label)
 
       loss /= args.backprop_every
 

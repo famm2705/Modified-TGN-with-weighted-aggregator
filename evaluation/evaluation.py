@@ -61,8 +61,8 @@ def eval_edge_prediction(model, negative_edge_sampler, data, n_neighbors, batch_
                 n_neighbors
             )
 
-            pos_prob_np = pos_prob.squeeze().cpu().numpy()
-            neg_prob_np = neg_prob.squeeze().cpu().numpy()
+            pos_prob_np = pos_prob.view(-1).cpu().numpy()
+            neg_prob_np = neg_prob.view(-1).cpu().numpy()
 
             pred_score = np.concatenate([pos_prob_np, neg_prob_np])
             true_label = np.concatenate([np.ones(size), np.zeros(size)])
