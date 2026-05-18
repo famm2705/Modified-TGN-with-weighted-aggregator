@@ -5,6 +5,7 @@ import sys
 import random
 import argparse
 import pickle
+import csv
 from pathlib import Path
 
 import torch
@@ -95,18 +96,24 @@ USE_MEMORY = args.use_memory
 MESSAGE_DIM = args.message_dim
 MEMORY_DIM = args.memory_dim
 
-Path("./saved_models/").mkdir(parents=True, exist_ok=True)
-Path("./saved_checkpoints/").mkdir(parents=True, exist_ok=True)
-MODEL_SAVE_PATH = f'./saved_models/{args.prefix}-{args.data}' + '\
-  node-classification.pth'
-get_checkpoint_path = lambda \
-    epoch: f'./saved_checkpoints/{args.prefix}-{args.data}-{epoch}' + '\
-  node-classification.pth'
+MODEL_BASE_PATH = "/content/drive/MyDrive/tgn_models"
+RESULTS_PATH = "/content/drive/MyDrive/tgn_results"
+Path(MODEL_BASE_PATH).mkdir(parents=True, exist_ok=True)
+Path(RESULTS_PATH).mkdir(parents=True, exist_ok=True)
+
+ENCODER_MODEL_PATH = f'{MODEL_BASE_PATH}/{args.prefix}_{args.data}_{args.aggregator}.pth'
+DECODER_MODEL_SAVE_PATH = (
+  f'{MODEL_BASE_PATH}/supervised_{args.prefix}_{args.data}_{args.aggregator}_decoder.pth'
+)
+get_checkpoint_path = lambda epoch: (
+  f'{MODEL_BASE_PATH}/supervised_{args.prefix}_{args.data}_{args.aggregator}_decoder_{epoch}.pth'
+)
 
 ### set up logger
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger()
 logger.setLevel(logging.DEBUG)
+Path("log/").mkdir(parents=True, exist_ok=True)
 fh = logging.FileHandler('log/{}.log'.format(str(time.time())))
 fh.setLevel(logging.DEBUG)
 ch = logging.StreamHandler()
@@ -134,10 +141,17 @@ mean_time_shift_src, std_time_shift_src, mean_time_shift_dst, std_time_shift_dst
   compute_time_statistics(full_data.sources, full_data.destinations, full_data.timestamps)
 
 for i in range(args.n_runs):
-  results_path = "results/{}_node_classification_{}.pkl".format(args.prefix,
-                                                                i) if i > 0 else "results/{}_node_classification.pkl".format(
-    args.prefix)
-  Path("results/").mkdir(parents=True, exist_ok=True)
+  results_path = (
+    f"{RESULTS_PATH}/supervised_{args.prefix}_{args.data}_{args.aggregator}_node_classification_{i}.pkl"
+    if i > 0
+    else f"{RESULTS_PATH}/supervised_{args.prefix}_{args.data}_{args.aggregator}_node_classification.pkl"
+  )
+
+  csv_path = f"{RESULTS_PATH}/supervised_{args.prefix}_{args.data}_{args.aggregator}_node_classification_metrics.csv"
+  if not Path(csv_path).exists():
+    with open(csv_path, "w", newline="") as f:
+      writer = csv.writer(f)
+      writer.writerow(["run", "epoch", "train_loss", "val_auc"])
 
   # Initialize Model
   tgn = TGN(neighbor_finder=train_ngh_finder, node_features=node_features,
@@ -164,10 +178,9 @@ for i in range(args.n_runs):
   logger.debug('Num of batches per epoch: {}'.format(num_batch))
 
   logger.info('Loading saved TGN model')
-  model_path = f'./saved_models/{args.prefix}-{DATA}.pth'
-  tgn.load_state_dict(torch.load(model_path))
+  tgn.load_state_dict(torch.load(ENCODER_MODEL_PATH, map_location=device))
   tgn.eval()
-  logger.info('TGN models loaded')
+  logger.info(f'TGN model loaded from {ENCODER_MODEL_PATH}')
   logger.info('Start training node classification task')
 
   decoder = MLP(node_features.shape[1], drop=DROP_OUT)
@@ -177,6 +190,8 @@ for i in range(args.n_runs):
 
   val_aucs = []
   train_losses = []
+  epoch_times = []
+  total_epoch_times = []
 
   early_stopper = EarlyStopMonitor(max_round=args.patience)
   for epoch in range(args.n_epoch):
@@ -218,31 +233,43 @@ for i in range(args.n_runs):
       decoder_optimizer.step()
       loss += decoder_loss.item()
     train_losses.append(loss / num_batch)
+    epoch_time = time.time() - start_epoch
+    epoch_times.append(epoch_time)
 
     val_auc = eval_node_classification(tgn, decoder, val_data, full_data.edge_idxs, BATCH_SIZE,
                                        n_neighbors=NUM_NEIGHBORS)
     val_aucs.append(val_auc)
+    total_epoch_time = time.time() - start_epoch
+    total_epoch_times.append(total_epoch_time)
 
     pickle.dump({
       "val_aps": val_aucs,
+      "val_aucs": val_aucs,
       "train_losses": train_losses,
-      "epoch_times": [0.0],
+      "epoch_times": epoch_times,
+      "total_epoch_times": total_epoch_times,
       "new_nodes_val_aps": [],
+      "source_encoder_model": ENCODER_MODEL_PATH,
+      "decoder_model": DECODER_MODEL_SAVE_PATH,
     }, open(results_path, "wb"))
 
-    logger.info(f'Epoch {epoch}: train loss: {loss / num_batch}, val auc: {val_auc}, time: {time.time() - start_epoch}')
-  
-  if args.use_validation:
-    if early_stopper.early_stop_check(val_auc):
-      logger.info('No improvement over {} epochs, stop training'.format(early_stopper.max_round))
-      break
-    else:
-      torch.save(decoder.state_dict(), get_checkpoint_path(epoch))
+    logger.info(f'Epoch {epoch}: train loss: {loss / num_batch}, val auc: {val_auc}, time: {total_epoch_time}')
+
+    with open(csv_path, "a", newline="") as f:
+      writer = csv.writer(f)
+      writer.writerow([i, epoch, loss / num_batch, val_auc])
+
+    if args.use_validation:
+      if early_stopper.early_stop_check(val_auc):
+        logger.info('No improvement over {} epochs, stop training'.format(early_stopper.max_round))
+        break
+      else:
+        torch.save(decoder.state_dict(), get_checkpoint_path(epoch))
 
   if args.use_validation:
     logger.info(f'Loading the best model at epoch {early_stopper.best_epoch}')
     best_model_path = get_checkpoint_path(early_stopper.best_epoch)
-    decoder.load_state_dict(torch.load(best_model_path))
+    decoder.load_state_dict(torch.load(best_model_path, map_location=device))
     logger.info(f'Loaded the best model at epoch {early_stopper.best_epoch} for inference')
     decoder.eval()
 
@@ -255,11 +282,18 @@ for i in range(args.n_runs):
     
   pickle.dump({
     "val_aps": val_aucs,
+    "val_aucs": val_aucs,
+    "test_auc": test_auc,
     "test_ap": test_auc,
     "train_losses": train_losses,
-    "epoch_times": [0.0],
+    "epoch_times": epoch_times,
+    "total_epoch_times": total_epoch_times,
     "new_nodes_val_aps": [],
     "new_node_test_ap": 0,
+    "source_encoder_model": ENCODER_MODEL_PATH,
+    "decoder_model": DECODER_MODEL_SAVE_PATH,
   }, open(results_path, "wb"))
 
+  torch.save(decoder.state_dict(), DECODER_MODEL_SAVE_PATH)
+  logger.info(f'Supervised decoder saved to {DECODER_MODEL_SAVE_PATH}')
   logger.info(f'test auc: {test_auc}')
