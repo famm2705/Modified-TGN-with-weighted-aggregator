@@ -29,16 +29,23 @@ DEFAULT_DATASETS = [
     "toy_mixed_noise",
     "toy_sequential",
 ]
+DEFAULT_PREDICTION_TASK = "edge_label_classification"
 
 PRIMARY_METRICS = [
+    "test_ap",
     "test_auc",
+    "test_f1",
 ]
 SECONDARY_METRICS = [
-    "legacy_test_ap",
+    "test_acc",
+    "test_prec",
+    "test_rec",
     "best_val_auc",
     "final_val_auc",
-    "best_val_ap_legacy",
-    "final_val_ap_legacy",
+    "best_val_ap",
+    "final_val_ap",
+    "best_val_f1",
+    "final_val_f1",
     "final_train_loss",
     "min_train_loss",
     "avg_epoch_time",
@@ -50,7 +57,7 @@ DEFAULT_METRICS = PRIMARY_METRICS + SECONDARY_METRICS
 def parse_args():
     parser = argparse.ArgumentParser(
         description=(
-            "Build CSV and Excel summaries from supervised TGN node-classification "
+            "Build CSV and Excel summaries from supervised TGN edge-label classification "
             "result pickle files."
         )
     )
@@ -70,6 +77,10 @@ def parse_args():
                         help="Metrics to summarize.")
     parser.add_argument("--chart-metrics", nargs="*", default=PRIMARY_METRICS,
                         help="Metrics to make chart-ready Excel sheets and PNG charts for.")
+    parser.add_argument("--prediction-task", default=DEFAULT_PREDICTION_TASK,
+                        help="Prediction task value expected inside result pickle files.")
+    parser.add_argument("--include-any-task", action="store_true",
+                        help="Include legacy supervised result files from any prediction task.")
     parser.add_argument("--confidence", type=float, default=DEFAULT_CONFIDENCE,
                         help="Confidence interval level, for example 0.95.")
     parser.add_argument("--expected-runs", type=int, default=DEFAULT_EXPECTED_RUNS,
@@ -85,7 +96,7 @@ def parse_supervised_result_filename(path, datasets, aggregators):
     aggregator_pattern = "|".join(re.escape(a) for a in sorted(aggregators, key=len, reverse=True))
     match = re.match(
         rf"^supervised_(?P<body>.+)_(?P<aggregator>{aggregator_pattern})"
-        rf"_node_classification(?:_(?P<run>\d+))?$",
+        rf"_(?P<result_task>node_classification|edge_label_classification)(?:_(?P<run>\d+))?$",
         path.stem,
     )
     if not match:
@@ -110,6 +121,7 @@ def parse_supervised_result_filename(path, datasets, aggregators):
         "dataset": dataset,
         "prefix": prefix,
         "aggregator": match.group("aggregator"),
+        "result_task": match.group("result_task"),
         "run": int(match.group("run") or 0),
     }
 
@@ -120,22 +132,30 @@ def load_supervised_run_file(path):
 
     val_aucs = data.get("val_aucs", []) or []
     val_aps = data.get("val_aps", []) or []
+    val_f1s = data.get("val_f1s", []) or []
     train_losses = data.get("train_losses", []) or []
     total_epoch_times = data.get("total_epoch_times", []) or []
 
     row = {
+        "prediction_task": data.get("prediction_task", "legacy_node_classification"),
+        "test_ap": scalar_or_nan(data.get("test_ap")),
         "test_auc": scalar_or_nan(data.get("test_auc")),
-        # train_supervised.py keeps test_ap as a legacy alias for test_auc.
-        "legacy_test_ap": scalar_or_nan(data.get("test_ap")),
+        "test_acc": scalar_or_nan(data.get("test_acc")),
+        "test_prec": scalar_or_nan(data.get("test_prec")),
+        "test_rec": scalar_or_nan(data.get("test_rec")),
+        "test_f1": scalar_or_nan(data.get("test_f1")),
         "best_val_auc": safe_max(val_aucs),
         "final_val_auc": safe_last(val_aucs),
-        "best_val_ap_legacy": safe_max(val_aps),
-        "final_val_ap_legacy": safe_last(val_aps),
+        "best_val_ap": safe_max(val_aps),
+        "final_val_ap": safe_last(val_aps),
+        "best_val_f1": safe_max(val_f1s),
+        "final_val_f1": safe_last(val_f1s),
         "final_train_loss": safe_last(train_losses),
         "min_train_loss": safe_min(train_losses),
         "avg_epoch_time": float(np.mean(total_epoch_times)) if len(total_epoch_times) else np.nan,
         "total_train_time": float(np.sum(total_epoch_times)) if len(total_epoch_times) else np.nan,
         "num_epochs_recorded": len(total_epoch_times),
+        "edge_decoder_input_dim": data.get("edge_decoder_input_dim", np.nan),
         "source_encoder_model": data.get("source_encoder_model", ""),
         "decoder_model": data.get("decoder_model", ""),
         "source_file": path.name,
@@ -144,11 +164,12 @@ def load_supervised_run_file(path):
     return row
 
 
-def collect_raw_runs(results_dir, datasets, aggregators, prefixes=None, include_incomplete=False):
+def collect_raw_runs(results_dir, datasets, aggregators, prefixes=None, prediction_task=None,
+                     include_any_task=False, include_incomplete=False):
     rows = []
     prefixes = set(prefixes or [])
 
-    for path in sorted(results_dir.glob("supervised_*_node_classification*.pkl")):
+    for path in sorted(results_dir.glob("supervised_*_classification*.pkl")):
         parsed = parse_supervised_result_filename(path, datasets=datasets, aggregators=aggregators)
         if parsed is None:
             continue
@@ -156,6 +177,8 @@ def collect_raw_runs(results_dir, datasets, aggregators, prefixes=None, include_
             continue
 
         row = load_supervised_run_file(path)
+        if not include_any_task and prediction_task and row["prediction_task"] != prediction_task:
+            continue
         if not include_incomplete and not row["is_complete"]:
             continue
         row.update(parsed)
@@ -164,7 +187,8 @@ def collect_raw_runs(results_dir, datasets, aggregators, prefixes=None, include_
     if not rows:
         raise FileNotFoundError(
             f"No matching supervised result .pkl files found in {results_dir}. "
-            "Check --datasets, --aggregators, and --prefixes."
+            "Check --datasets, --aggregators, --prefixes, and --prediction-task. "
+            "If you want to include older node-only supervised files, pass --include-any-task."
         )
 
     return (
@@ -213,7 +237,7 @@ def write_outputs(raw_df, summary_long, summary_wide, completion, plot_tables, o
     workbook_path = output_dir / output_name
     with pd.ExcelWriter(workbook_path, engine="openpyxl") as writer:
         info = pd.DataFrame([
-            {"field": "task", "value": "supervised_node_classification"},
+            {"field": "task", "value": DEFAULT_PREDICTION_TASK},
             {"field": "confidence_level", "value": confidence},
             {"field": "expected_runs", "value": expected_runs},
             {"field": "num_raw_rows", "value": len(raw_df)},
@@ -223,8 +247,8 @@ def write_outputs(raw_df, summary_long, summary_wide, completion, plot_tables, o
             {
                 "field": "metric_note",
                 "value": (
-                    "Current train_supervised.py stores test_ap as a legacy duplicate "
-                    "of test_auc; use test_auc for the supervised report."
+                    "Current train_supervised.py predicts edge labels from source embedding, "
+                    "destination embedding, and edge features."
                 ),
             },
         ])
@@ -336,6 +360,8 @@ def main():
         datasets=args.datasets,
         aggregators=args.aggregators,
         prefixes=args.prefixes,
+        prediction_task=args.prediction_task,
+        include_any_task=args.include_any_task,
         include_incomplete=args.include_incomplete,
     )
     summary_long, summary_wide = build_summary(raw_df, args.metrics, args.confidence)

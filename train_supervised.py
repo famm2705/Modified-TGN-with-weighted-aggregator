@@ -14,14 +14,14 @@ import numpy as np
 from tgn import TGN
 from utils.utils import EarlyStopMonitor, get_neighbor_finder, MLP
 from utils.data_processing import compute_time_statistics, get_data_node_classification
-from evaluation.evaluation import eval_node_classification
+from evaluation.evaluation import eval_edge_label_prediction
 
 random.seed(0)
 np.random.seed(0)
 torch.manual_seed(0)
 
 ### Argument and global variables
-parser = argparse.ArgumentParser('TGN self-supervised training')
+parser = argparse.ArgumentParser('TGN supervised edge-label training')
 parser.add_argument('-d', '--data', type=str, help='Dataset name (eg. wikipedia or reddit)',
                     default='wikipedia')
 parser.add_argument('--bs', type=int, default=100, help='Batch_size')
@@ -103,10 +103,10 @@ Path(RESULTS_PATH).mkdir(parents=True, exist_ok=True)
 
 ENCODER_MODEL_PATH = f'{MODEL_BASE_PATH}/{args.prefix}_{args.data}_{args.aggregator}.pth'
 DECODER_MODEL_SAVE_PATH = (
-  f'{MODEL_BASE_PATH}/supervised_{args.prefix}_{args.data}_{args.aggregator}_decoder.pth'
+  f'{MODEL_BASE_PATH}/supervised_{args.prefix}_{args.data}_{args.aggregator}_edge_label_decoder.pth'
 )
 get_checkpoint_path = lambda epoch: (
-  f'{MODEL_BASE_PATH}/supervised_{args.prefix}_{args.data}_{args.aggregator}_decoder_{epoch}.pth'
+  f'{MODEL_BASE_PATH}/supervised_{args.prefix}_{args.data}_{args.aggregator}_edge_label_decoder_{epoch}.pth'
 )
 
 ### set up logger
@@ -131,6 +131,8 @@ full_data, node_features, edge_features, train_data, val_data, test_data = \
 max_idx = max(full_data.unique_nodes)
 
 train_ngh_finder = get_neighbor_finder(train_data, uniform=UNIFORM, max_node_idx=max_idx)
+full_ngh_finder = get_neighbor_finder(full_data, uniform=UNIFORM, max_node_idx=max_idx)
+EDGE_DECODER_INPUT_DIM = 2 * node_features.shape[1] + edge_features.shape[1]
 
 # Set device
 device_string = 'cuda:{}'.format(GPU) if torch.cuda.is_available() else 'cpu'
@@ -142,16 +144,26 @@ mean_time_shift_src, std_time_shift_src, mean_time_shift_dst, std_time_shift_dst
 
 for i in range(args.n_runs):
   results_path = (
-    f"{RESULTS_PATH}/supervised_{args.prefix}_{args.data}_{args.aggregator}_node_classification_{i}.pkl"
+    f"{RESULTS_PATH}/supervised_{args.prefix}_{args.data}_{args.aggregator}_edge_label_classification_{i}.pkl"
     if i > 0
-    else f"{RESULTS_PATH}/supervised_{args.prefix}_{args.data}_{args.aggregator}_node_classification.pkl"
+    else f"{RESULTS_PATH}/supervised_{args.prefix}_{args.data}_{args.aggregator}_edge_label_classification.pkl"
   )
 
-  csv_path = f"{RESULTS_PATH}/supervised_{args.prefix}_{args.data}_{args.aggregator}_node_classification_metrics.csv"
+  csv_path = f"{RESULTS_PATH}/supervised_{args.prefix}_{args.data}_{args.aggregator}_edge_label_classification_metrics.csv"
   if not Path(csv_path).exists():
     with open(csv_path, "w", newline="") as f:
       writer = csv.writer(f)
-      writer.writerow(["run", "epoch", "train_loss", "val_auc"])
+      writer.writerow([
+        "run",
+        "epoch",
+        "train_loss",
+        "val_auc",
+        "val_ap",
+        "val_acc",
+        "val_precision",
+        "val_recall",
+        "val_f1",
+      ])
 
   # Initialize Model
   tgn = TGN(neighbor_finder=train_ngh_finder, node_features=node_features,
@@ -181,14 +193,19 @@ for i in range(args.n_runs):
   tgn.load_state_dict(torch.load(ENCODER_MODEL_PATH, map_location=device))
   tgn.eval()
   logger.info(f'TGN model loaded from {ENCODER_MODEL_PATH}')
-  logger.info('Start training node classification task')
+  logger.info('Start training edge label classification task')
 
-  decoder = MLP(node_features.shape[1], drop=DROP_OUT)
+  decoder = MLP(EDGE_DECODER_INPUT_DIM, drop=DROP_OUT)
   decoder_optimizer = torch.optim.Adam(decoder.parameters(), lr=args.lr)
   decoder = decoder.to(device)
-  decoder_loss_criterion = torch.nn.BCELoss()
+  decoder_loss_criterion = torch.nn.BCEWithLogitsLoss()
 
+  val_aps = []
   val_aucs = []
+  val_accs = []
+  val_precs = []
+  val_recs = []
+  val_f1s = []
   train_losses = []
   epoch_times = []
   total_epoch_times = []
@@ -201,6 +218,7 @@ for i in range(args.n_runs):
     if USE_MEMORY:
       tgn.memory.__init_memory__()
 
+    tgn.set_neighbor_finder(train_ngh_finder)
     tgn = tgn.eval()
     decoder = decoder.train()
     loss = 0
@@ -212,10 +230,8 @@ for i in range(args.n_runs):
       sources_batch = train_data.sources[s_idx: e_idx]
       destinations_batch = train_data.destinations[s_idx: e_idx]
       timestamps_batch = train_data.timestamps[s_idx: e_idx]
-      edge_idxs_batch = full_data.edge_idxs[s_idx: e_idx]
+      edge_idxs_batch = train_data.edge_idxs[s_idx: e_idx]
       labels_batch = train_data.labels[s_idx: e_idx]
-
-      size = len(sources_batch)
 
       decoder_optimizer.zero_grad()
       with torch.no_grad():
@@ -227,8 +243,11 @@ for i in range(args.n_runs):
                                                                                      NUM_NEIGHBORS)
 
       labels_batch_torch = torch.from_numpy(labels_batch).float().to(device)
-      pred = decoder(source_embedding).sigmoid()
-      decoder_loss = decoder_loss_criterion(pred, labels_batch_torch)
+      edge_features_batch = tgn.edge_raw_features[edge_idxs_batch]
+      decoder_input = torch.cat([source_embedding, destination_embedding, edge_features_batch],
+                                dim=1)
+      logits = decoder(decoder_input)
+      decoder_loss = decoder_loss_criterion(logits, labels_batch_torch)
       decoder_loss.backward()
       decoder_optimizer.step()
       loss += decoder_loss.item()
@@ -236,31 +255,63 @@ for i in range(args.n_runs):
     epoch_time = time.time() - start_epoch
     epoch_times.append(epoch_time)
 
-    val_auc = eval_node_classification(tgn, decoder, val_data, full_data.edge_idxs, BATCH_SIZE,
-                                       n_neighbors=NUM_NEIGHBORS)
+    tgn.set_neighbor_finder(full_ngh_finder)
+    val_metrics = eval_edge_label_prediction(tgn, decoder, val_data, BATCH_SIZE,
+                                             n_neighbors=NUM_NEIGHBORS)
+    val_auc = val_metrics["auc"]
+    val_ap = val_metrics["ap"]
     val_aucs.append(val_auc)
+    val_aps.append(val_ap)
+    val_accs.append(val_metrics["acc"])
+    val_precs.append(val_metrics["precision"])
+    val_recs.append(val_metrics["recall"])
+    val_f1s.append(val_metrics["f1"])
     total_epoch_time = time.time() - start_epoch
     total_epoch_times.append(total_epoch_time)
 
     pickle.dump({
-      "val_aps": val_aucs,
+      "val_aps": val_aps,
       "val_aucs": val_aucs,
+      "val_accs": val_accs,
+      "val_precs": val_precs,
+      "val_recs": val_recs,
+      "val_f1s": val_f1s,
       "train_losses": train_losses,
       "epoch_times": epoch_times,
       "total_epoch_times": total_epoch_times,
       "new_nodes_val_aps": [],
       "source_encoder_model": ENCODER_MODEL_PATH,
       "decoder_model": DECODER_MODEL_SAVE_PATH,
+      "prediction_task": "edge_label_classification",
+      "edge_decoder_input_dim": EDGE_DECODER_INPUT_DIM,
     }, open(results_path, "wb"))
 
-    logger.info(f'Epoch {epoch}: train loss: {loss / num_batch}, val auc: {val_auc}, time: {total_epoch_time}')
+    logger.info(
+      f'Epoch {epoch}: train loss: {loss / num_batch}, val auc: {val_auc}, '
+      f'val ap: {val_ap}, val f1: {val_metrics["f1"]}, time: {total_epoch_time}')
 
     with open(csv_path, "a", newline="") as f:
       writer = csv.writer(f)
-      writer.writerow([i, epoch, loss / num_batch, val_auc])
+      writer.writerow([
+        i,
+        epoch,
+        loss / num_batch,
+        val_auc,
+        val_ap,
+        val_metrics["acc"],
+        val_metrics["precision"],
+        val_metrics["recall"],
+        val_metrics["f1"],
+      ])
 
     if args.use_validation:
-      if early_stopper.early_stop_check(val_auc):
+      early_stop_metric = val_auc
+      if np.isnan(early_stop_metric):
+        early_stop_metric = val_ap
+      if np.isnan(early_stop_metric):
+        early_stop_metric = 0.0
+
+      if early_stopper.early_stop_check(early_stop_metric):
         logger.info('No improvement over {} epochs, stop training'.format(early_stopper.max_round))
         break
       else:
@@ -273,18 +324,34 @@ for i in range(args.n_runs):
     logger.info(f'Loaded the best model at epoch {early_stopper.best_epoch} for inference')
     decoder.eval()
 
-    test_auc = eval_node_classification(tgn, decoder, test_data, full_data.edge_idxs, BATCH_SIZE,
-                                        n_neighbors=NUM_NEIGHBORS)
+    tgn.set_neighbor_finder(full_ngh_finder)
+    test_metrics = eval_edge_label_prediction(tgn, decoder, test_data, BATCH_SIZE,
+                                              n_neighbors=NUM_NEIGHBORS)
   else:
     # If we are not using a validation set, the test performance is just the performance computed
     # in the last epoch
-    test_auc = val_aucs[-1]
+    test_metrics = {
+      "auc": val_aucs[-1],
+      "ap": val_aps[-1],
+      "acc": val_accs[-1],
+      "precision": val_precs[-1],
+      "recall": val_recs[-1],
+      "f1": val_f1s[-1],
+    }
     
   pickle.dump({
-    "val_aps": val_aucs,
+    "val_aps": val_aps,
     "val_aucs": val_aucs,
-    "test_auc": test_auc,
-    "test_ap": test_auc,
+    "val_accs": val_accs,
+    "val_precs": val_precs,
+    "val_recs": val_recs,
+    "val_f1s": val_f1s,
+    "test_auc": test_metrics["auc"],
+    "test_ap": test_metrics["ap"],
+    "test_acc": test_metrics["acc"],
+    "test_prec": test_metrics["precision"],
+    "test_rec": test_metrics["recall"],
+    "test_f1": test_metrics["f1"],
     "train_losses": train_losses,
     "epoch_times": epoch_times,
     "total_epoch_times": total_epoch_times,
@@ -292,8 +359,12 @@ for i in range(args.n_runs):
     "new_node_test_ap": 0,
     "source_encoder_model": ENCODER_MODEL_PATH,
     "decoder_model": DECODER_MODEL_SAVE_PATH,
+    "prediction_task": "edge_label_classification",
+    "edge_decoder_input_dim": EDGE_DECODER_INPUT_DIM,
   }, open(results_path, "wb"))
 
   torch.save(decoder.state_dict(), DECODER_MODEL_SAVE_PATH)
   logger.info(f'Supervised decoder saved to {DECODER_MODEL_SAVE_PATH}')
-  logger.info(f'test auc: {test_auc}')
+  logger.info(
+    f'test auc: {test_metrics["auc"]}, test ap: {test_metrics["ap"]}, '
+    f'test f1: {test_metrics["f1"]}')
