@@ -77,6 +77,8 @@ def parse_args():
                         help="Metrics to summarize.")
     parser.add_argument("--chart-metrics", nargs="*", default=PRIMARY_METRICS,
                         help="Metrics to make chart-ready Excel sheets and PNG charts for.")
+    parser.add_argument("--error-bars", default="std", choices=["std", "ci", "sem", "none"],
+                        help="Error bars used in embedded/PNG charts. Default: standard deviation.")
     parser.add_argument("--prediction-task", default=DEFAULT_PREDICTION_TASK,
                         help="Prediction task value expected inside result pickle files.")
     parser.add_argument("--include-any-task", action="store_true",
@@ -88,7 +90,7 @@ def parse_args():
     parser.add_argument("--include-incomplete", action="store_true",
                         help="Include partially written pickle files without test metrics.")
     parser.add_argument("--skip-png-charts", action="store_true",
-                        help="Skip PNG bar charts. Excel and CSV tables are still written.")
+                        help="Skip PNG bar charts and embedded chart images. Excel/CSV tables are still written.")
     return parser.parse_args()
 
 
@@ -220,8 +222,35 @@ def write_plot_sheet(writer, metric, tables):
         row += len(table) + 4
 
 
+def add_chart_images_to_workbook(workbook, chart_paths, error_bars):
+    if not chart_paths:
+        return False
+
+    try:
+        from openpyxl.drawing.image import Image
+    except ImportError:
+        return False
+
+    sheet_name = sanitize_sheet_name(f"charts_{error_bars}")
+    if sheet_name in workbook.sheetnames:
+        del workbook[sheet_name]
+    worksheet = workbook.create_sheet(sheet_name)
+    worksheet["A1"] = f"Embedded bar charts with {error_bars} error bars"
+
+    row = 3
+    for chart_path in chart_paths:
+        worksheet[f"A{row}"] = chart_path.stem
+        image = Image(str(chart_path))
+        image.width = 960
+        image.height = 480
+        worksheet.add_image(image, f"A{row + 1}")
+        row += 29
+
+    return True
+
+
 def write_outputs(raw_df, summary_long, summary_wide, completion, plot_tables, output_dir,
-                  output_name, confidence, expected_runs):
+                  output_name, confidence, expected_runs, chart_paths=None, error_bars="std"):
     output_dir.mkdir(parents=True, exist_ok=True)
 
     raw_csv = output_dir / "supervised_raw_runs.csv"
@@ -244,6 +273,7 @@ def write_outputs(raw_df, summary_long, summary_wide, completion, plot_tables, o
             {"field": "datasets", "value": ", ".join(sorted(raw_df["dataset"].unique()))},
             {"field": "aggregators", "value": ", ".join(sorted(raw_df["aggregator"].unique()))},
             {"field": "primary_metrics", "value": ", ".join(PRIMARY_METRICS)},
+            {"field": "chart_error_bars", "value": error_bars},
             {
                 "field": "metric_note",
                 "value": (
@@ -259,6 +289,7 @@ def write_outputs(raw_df, summary_long, summary_wide, completion, plot_tables, o
         summary_wide.to_excel(writer, sheet_name="summary_wide", index=False)
         for metric, tables in plot_tables.items():
             write_plot_sheet(writer, metric, tables)
+        embedded_charts = add_chart_images_to_workbook(writer.book, chart_paths or [], error_bars)
 
     return {
         "workbook": workbook_path,
@@ -266,10 +297,27 @@ def write_outputs(raw_df, summary_long, summary_wide, completion, plot_tables, o
         "summary_long_csv": summary_long_csv,
         "summary_wide_csv": summary_wide_csv,
         "completion_csv": completion_csv,
+        "embedded_charts": embedded_charts,
     }
 
 
-def save_png_charts(plot_tables, output_dir, confidence):
+def get_error_table(tables, error_bars, confidence):
+    means = tables["mean"]
+    if error_bars == "none":
+        return None, "none"
+    if error_bars == "std":
+        return tables["std"].reindex(index=means.index, columns=means.columns).fillna(0.0), "standard deviation"
+    if error_bars == "sem":
+        std = tables["std"].reindex(index=means.index, columns=means.columns)
+        n_runs = tables["n_runs"].reindex(index=means.index, columns=means.columns)
+        return (std / np.sqrt(n_runs)).fillna(0.0), "standard error"
+    return (
+        tables["ci_margin"].reindex(index=means.index, columns=means.columns).fillna(0.0),
+        f"{int(confidence * 100)}% CI",
+    )
+
+
+def save_png_charts(plot_tables, output_dir, confidence, error_bars):
     try:
         import matplotlib.pyplot as plt
     except ImportError:
@@ -281,7 +329,7 @@ def save_png_charts(plot_tables, output_dir, confidence):
 
     for metric, tables in plot_tables.items():
         means = tables["mean"]
-        errors = tables["ci_margin"].reindex(index=means.index, columns=means.columns).fillna(0.0)
+        errors, error_label = get_error_table(tables, error_bars, confidence)
         if means.empty:
             continue
 
@@ -298,7 +346,7 @@ def save_png_charts(plot_tables, output_dir, confidence):
                 means[aggregator].to_numpy(dtype=float),
                 width=width,
                 label=aggregator,
-                yerr=errors[aggregator].to_numpy(dtype=float),
+                yerr=None if errors is None else errors[aggregator].to_numpy(dtype=float),
                 capsize=4,
             )
 
@@ -312,7 +360,7 @@ def save_png_charts(plot_tables, output_dir, confidence):
         ax.text(
             0.99,
             0.01,
-            f"Error bars: {int(confidence * 100)}% CI",
+            f"Error bars: {error_label}",
             transform=ax.transAxes,
             ha="right",
             va="bottom",
@@ -320,7 +368,7 @@ def save_png_charts(plot_tables, output_dir, confidence):
         )
         fig.tight_layout()
 
-        chart_path = charts_dir / f"supervised_{metric}_bar_chart.png"
+        chart_path = charts_dir / f"supervised_{metric}_bar_chart_{error_bars}.png"
         fig.savefig(chart_path, dpi=200, bbox_inches="tight")
         plt.close(fig)
         chart_paths.append(chart_path)
@@ -367,6 +415,12 @@ def main():
     summary_long, summary_wide = build_summary(raw_df, args.metrics, args.confidence)
     completion = build_completion_table(summary_long, args.expected_runs)
     plot_tables = build_plot_tables(summary_long, args.chart_metrics)
+    chart_paths = [] if args.skip_png_charts else save_png_charts(
+        plot_tables,
+        output_dir,
+        args.confidence,
+        args.error_bars,
+    )
     paths = write_outputs(
         raw_df=raw_df,
         summary_long=summary_long,
@@ -377,8 +431,9 @@ def main():
         output_name=args.output_name,
         confidence=args.confidence,
         expected_runs=args.expected_runs,
+        chart_paths=chart_paths,
+        error_bars=args.error_bars,
     )
-    chart_paths = [] if args.skip_png_charts else save_png_charts(plot_tables, output_dir, args.confidence)
     print_compact_summary(summary_long, completion, paths, chart_paths)
 
 
