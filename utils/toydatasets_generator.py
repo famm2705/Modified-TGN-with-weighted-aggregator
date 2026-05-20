@@ -1,335 +1,279 @@
-import numpy as np
-import pandas as pd
+import argparse
 from pathlib import Path
 
-np.random.seed(42)
-
-# ======================
-# Shared Parameters
-# ======================
-num_nodes = 120
-feature_dim = 6
-num_servers = 15
-
-servers = np.arange(num_servers)
-devices = np.arange(num_servers, num_nodes)
+import numpy as np
+import pandas as pd
 
 
-# ======================
-# Core Generator
-# ======================
-def generate_dataset(num_edges, sparsity_level="sparse", mode="mixed"):
-    """
-    Generate a synthetic temporal graph dataset.
+# These datasets are intentionally block-structured for TGN's memory update schedule.
+# With bs=128, each trial writes one full history batch followed by one query batch.
+# Query edges have neutral current-edge features; their labels depend on the previous
+# history batch, where the selected message aggregator is the intended bottleneck.
 
-    Parameters
-    ----------
-    num_edges : int
-        Approximate number of edges to generate before attack injection.
-    sparsity_level : str
-        "dense" or "sparse" — controls drop probability, time scale, burst rate.
-    mode : str
-        Structural mode that determines which aggregator is favoured:
-        - "markov"       → favours LastMessageAggregator
-        - "iid"          → favours MeanMessageAggregator
-        - "mixed_noise"  → favours WeightedMessageAggregator
-        - "sequential"   → favours AttentionMessageAggregator
+NUM_NODES = 120
+FEATURE_DIM = 6
+NODE_FEATURE_DIM = 172
+NUM_SERVERS = 15
 
-    Returns
-    -------
-    pd.DataFrame with columns: u, i, ts, label, f0..f(feature_dim-1)
-    """
+HISTORY_SIZE = 128
+QUERY_SIZE = 64
+FILLER_SIZE = 64
+DEFAULT_TRIALS = 32
 
-    sources, destinations = [], []
-    timestamps, features, labels = [], [], []
+SERVERS = np.arange(NUM_SERVERS)
+DEVICES = np.arange(NUM_SERVERS, NUM_NODES)
+TRIAL_DEVICES = np.arange(NUM_SERVERS, NUM_SERVERS + 16)
+FILLER_DEVICES = np.arange(NUM_SERVERS + 32, NUM_NODES)
 
-    t = 0
-
-    # ----------------------
-    # Sparsity config
-    # ----------------------
-    if sparsity_level == "dense":
-        drop_prob = 0.05
-        time_scale = 2.0
-        burst_prob = 0.3
-        device_server_prob = 0.85
-    else:  # sparse
-        drop_prob = 0.4
-        time_scale = 10.0
-        burst_prob = 0.1
-        device_server_prob = 0.6
-
-    # ----------------------
-    # Mode-level overrides on top of sparsity
-    # ----------------------
-    if mode == "markov":
-        # Isolated single events, no bursts — each interaction fully replaces prior state.
-        # Long gaps between interactions so the "last" message is always the only relevant one.
-        burst_prob = 0.02
-        time_scale = max(time_scale, 15.0)
-
-    elif mode == "iid":
-        # Dense, uniform traffic — all messages equally informative, no temporal structure.
-        burst_prob = 0.0
-        time_scale = min(time_scale, 3.0)
-        drop_prob = min(drop_prob, 0.05)
-
-    elif mode == "mixed_noise":
-        # Moderate interaction rate. Attack signal will be buried in junk messages.
-        burst_prob = max(burst_prob, 0.2)
-        time_scale = min(time_scale, 5.0)
-
-    elif mode == "sequential":
-        # Moderate rate. Attack unfolds in strict ordered phases across time.
-        burst_prob = max(burst_prob, 0.15)
-        time_scale = min(time_scale, 4.0)
-
-    # ----------------------
-    # Node state for markov mode (continuous drift)
-    # ----------------------
-    # Each node carries a latent state vector that drifts over time.
-    # The most recent interaction's features reflect the current state.
-    node_state = np.zeros((num_nodes, feature_dim))
-
-    # ----------------------
-    # Normal interaction factory
-    # ----------------------
-    def normal_interaction(step=0):
-        if np.random.rand() < device_server_prob:
-            u = np.random.choice(devices)
-            v = np.random.choice(servers)
-        else:
-            u = np.random.choice(devices)
-            v = np.random.choice(devices)
-
-        if mode == "markov":
-            # Features are the node's current drifted state — the latest message
-            # is the only one that matters because previous states are obsolete.
-            node_state[u] += np.random.normal(0, 0.3, feature_dim)
-            node_state[v] += np.random.normal(0, 0.3, feature_dim)
-            feat = (node_state[u] + node_state[v]) / 2.0 + np.random.normal(0, 0.05, feature_dim)
-
-        elif mode == "iid":
-            # Pure i.i.d. Gaussian — no node state, no temporal dependency.
-            # Every message is equally informative; mean is the correct aggregator.
-            feat = np.random.normal(0, 1, feature_dim)
-
-        elif mode == "mixed_noise":
-            # 75% of normal traffic is pure noise (random features).
-            # 25% carries a weak directional signal correlated with node identity.
-            if np.random.rand() < 0.75:
-                feat = np.random.normal(0, 1, feature_dim)   # junk
-            else:
-                feat = np.random.normal(0.2, 0.3, feature_dim)  # weak signal
-
-        elif mode == "sequential":
-            # Normal traffic is unremarkable baseline noise.
-            feat = np.random.normal(0, 1, feature_dim)
-
-        else:
-            feat = np.random.normal(0, 1, feature_dim)
-
-        return u, v, feat, 0
-
-    # ----------------------
-    # Generate base traffic
-    # ----------------------
-    for i in range(num_edges):
-        if np.random.rand() < drop_prob:
-            continue
-
-        u, v, feat, lbl = normal_interaction(step=i)
-
-        if np.random.rand() < (1 - burst_prob):
-            delta = np.random.exponential(time_scale)
-        else:
-            delta = np.random.exponential(0.5)
-
-        t += delta
-
-        sources.append(u)
-        destinations.append(v)
-        timestamps.append(t)
-        features.append(feat)
-        labels.append(lbl)
-
-    features_arr = np.array(features)
-    n = len(sources)
-
-    # ----------------------
-    # Attack injection (mode-specific)
-    # ----------------------
-
-    # Spread attack episodes across the whole timeline so the default
-    # 70/15/15 time split contains positives in train, validation, and test.
-    attack_windows = [(0.18, 0.30), (0.54, 0.66), (0.73, 0.82), (0.88, 0.96)]
-
-    if mode == "markov":
-        # ------------------------------------------------------------------
-        # Abrupt state-change attacks.
-        # A few devices change state sharply near the end of each episode.
-        # Prior messages in the same batch are deliberately stale, so the
-        # latest message remains the clearest signal.
-        # ------------------------------------------------------------------
-        attackers = np.random.choice(devices, size=3, replace=False)
-        targets = np.random.choice(servers, size=3, replace=False)
-        base_state = np.array([3.0, -3.0, 3.0, -3.0, 3.0, -3.0])
-
-        for episode, (start_frac, end_frac) in enumerate(attack_windows):
-            start = int(start_frac * n)
-            end = max(start + 1, int(end_frac * n))
-            attacker = attackers[episode % len(attackers)]
-            target = targets[episode % len(targets)]
-            compromised_state = base_state * (1 if episode % 2 == 0 else -1)
-
-            for i in range(start, min(end, n)):
-                if np.random.rand() < 0.35:
-                    continue
-                sources[i] = attacker
-                destinations[i] = target
-                progress = (i - start) / max(1, end - start)
-
-                if progress < 0.45:
-                    # Still mostly benign, making older messages misleading.
-                    features_arr[i] = np.random.normal(0, 0.35, feature_dim)
-                    labels[i] = 0
-                else:
-                    features_arr[i] = compromised_state + np.random.normal(0, 0.12, feature_dim)
-                    labels[i] = 1
-
-    elif mode == "iid":
-        # ------------------------------------------------------------------
-        # Slow statistical anomaly.
-        # Many weakly shifted samples appear in every split. No individual
-        # event is very strong, but the average over repeated messages is.
-        # ------------------------------------------------------------------
-        attack_nodes = np.random.choice(devices, size=12, replace=False)
-        target_servers = np.random.choice(servers, size=3, replace=False)
-
-        for episode, (start_frac, end_frac) in enumerate(attack_windows):
-            start = int(start_frac * n)
-            end = max(start + 1, int(end_frac * n))
-            target = target_servers[episode % len(target_servers)]
-
-            for i in range(start, min(end, n)):
-                if np.random.rand() < 0.35:
-                    continue
-                progress = (i - start) / max(1, end - start)
-                sources[i] = np.random.choice(attack_nodes)
-                destinations[i] = target
-                features_arr[i] = np.random.normal(0.45, 0.85, feature_dim)
-                labels[i] = int(progress > 0.40)
-
-    elif mode == "mixed_noise":
-        # ------------------------------------------------------------------
-        # Rare signal buried in noise.
-        # Multiple compromised devices send mostly junk messages, with enough
-        # high-signal anomalous messages in every split to make evaluation
-        # stable across repeated runs.
-        # ------------------------------------------------------------------
-        attackers = np.random.choice(devices, size=3, replace=False)
-        targets = np.random.choice(servers, size=3, replace=False)
-        junk_ratio = 0.82
-        signal_vecs = [
-            np.array([4.0, -3.5, 3.2, -2.8, 3.8, -3.2]),
-            np.array([-3.6, 3.4, -3.1, 2.9, -3.5, 3.0]),
-            np.array([3.2, 3.0, -3.4, -3.2, 2.8, -2.9]),
-        ]
-
-        for episode, (start_frac, end_frac) in enumerate(attack_windows):
-            start = int(start_frac * n)
-            end = max(start + 1, int(end_frac * n))
-            attacker = attackers[episode % len(attackers)]
-            target = targets[episode % len(targets)]
-            signal_vec = signal_vecs[episode % len(signal_vecs)]
-
-            for i in range(start, min(end, n)):
-                if np.random.rand() < 0.15:
-                    continue
-                progress = (i - start) / max(1, end - start)
-                sources[i] = attacker
-                destinations[i] = target
-
-                if np.random.rand() < junk_ratio:
-                    features_arr[i] = np.random.normal(0, 1.5, feature_dim)
-                    labels[i] = 0
-                else:
-                    features_arr[i] = signal_vec + np.random.normal(0, 0.08, feature_dim)
-                    labels[i] = int(progress > 0.15)
-
-    elif mode == "sequential":
-        # ------------------------------------------------------------------
-        # Three-phase ordered attack: probe → escalate → exfiltrate.
-        # The ordered sequence appears across train/val/test. Wrong-order
-        # decoys use the same phase signatures but should not be positive.
-        # Several attacker-target pairs prevent one pair from dominating.
-        # ------------------------------------------------------------------
-        attackers = np.random.choice(devices, size=4, replace=False)
-        targets = np.random.choice(servers, size=4, replace=False)
-
-        phase_features = {
-            "probe":       np.array([ 2.0,  0.0,  0.0, -1.0,  0.5,  0.0]),
-            "escalate":    np.array([ 0.0,  2.5,  0.0,  0.0, -1.0,  0.5]),
-            "exfiltrate":  np.array([ 0.0,  0.0,  3.0,  0.5,  0.0, -2.0]),
-        }
-
-        attack_start = int(0.12 * n)
-        attack_end = int(0.98 * n)
-        n_cycles = 10
-        cycle_length = max(1, (attack_end - attack_start) // n_cycles)
-
-        for cycle in range(n_cycles):
-            base = attack_start + cycle * cycle_length
-            phase_size = max(4, cycle_length // 5)
-            attacker = attackers[cycle % len(attackers)]
-            target = targets[cycle % len(targets)]
-            ordered = cycle % 4 != 1
-            phases = ["probe", "escalate", "exfiltrate"] if ordered else [
-                "probe", "exfiltrate", "escalate"
-            ]
-
-            for phase_idx, phase in enumerate(phases):
-                phase_start = base + phase_idx * (phase_size + max(1, phase_size // 2))
-                phase_end = min(phase_start + phase_size, n)
-                for i in range(phase_start, phase_end):
-                    if np.random.rand() < 0.20:
-                        continue
-                    sources[i] = attacker
-                    destinations[i] = target
-                    features_arr[i] = phase_features[phase] + np.random.normal(0, 0.15, feature_dim)
-                    labels[i] = int(ordered and phase == "exfiltrate" and cycle >= 1)
-
-    # ----------------------
-    # Build DataFrame
-    # ----------------------
-    df = pd.DataFrame({
-        'u': sources,
-        'i': destinations,
-        'ts': timestamps,
-        'label': labels
-    })
-
-    for j in range(feature_dim):
-        df[f'f{j}'] = features_arr[:, j]
-
-    return df
+NEUTRAL = np.zeros(FEATURE_DIM)
+LAST_POS = np.array([1.1, -1.1, 0.9, -0.9, 0.7, -0.7])
+LAST_NEG = -LAST_POS
+PERSISTENT_POS = np.array([0.35, 0.25, 0.20, -0.25, 0.20, -0.15])
+PERSISTENT_NEG = -PERSISTENT_POS
+PERSISTENT_DISTRACTOR = np.array([0.0, 0.0, 2.8, -2.8, 0.0, 0.0])
+SPIKE_POS = np.array([4.0, -4.0, 3.5, -3.5, 3.2, -3.2])
+SPIKE_NEG = -SPIKE_POS
+ORDER_A = np.array([2.0, 0.0, 0.0, -1.0, 0.5, 0.0])
+ORDER_B = np.array([0.0, 2.2, 0.0, 0.0, -1.0, 0.5])
+ORDER_C = np.array([0.0, 0.0, 2.6, 0.5, 0.0, -1.6])
 
 
-# ======================
-# Generate all datasets
-# ======================
-Path("./data").mkdir(parents=True, exist_ok=True)
-
-configs = [
-    ("markov",      5000, "sparse"),
-    ("iid",         6000, "dense"),
-    ("mixed_noise", 5000, "sparse"),
-    ("sequential",  6000, "dense"),
+DATASET_CONFIGS = [
+    ("toy_last_event", "last_event", 1101),
+    ("toy_persistent_mean", "persistent_mean", 2202),
+    ("toy_rare_spike", "rare_spike", 3303),
+    ("toy_ordered_pattern", "ordered_pattern", 4404),
 ]
 
-for mode, num_edges, sparsity in configs:
-    df = generate_dataset(num_edges=num_edges, sparsity_level=sparsity, mode=mode)
-    path = f"./data/toy_{mode}.csv"
-    df.to_csv(path, index=False)
-    n_pos = df['label'].sum()
-    print(f"toy_{mode}: {df.shape[0]} edges | {n_pos} positives ({100*n_pos/len(df):.1f}%) | sparsity={sparsity}")
+
+def append_event(rows, source, destination, timestamp, feature, label):
+    rows.append({
+        "u": int(source),
+        "i": int(destination),
+        "ts": float(timestamp),
+        "label": int(label),
+        **{f"f{j}": float(feature[j]) for j in range(FEATURE_DIM)},
+    })
+
+
+def jitter(rng, feature, scale):
+    return np.asarray(feature, dtype=float) + rng.normal(0.0, scale, FEATURE_DIM)
+
+
+def trial_source_and_label(trial_idx):
+    # Eight recurring devices appear once per segment. The positive window rotates by segment,
+    # so every device is positive in some trials and negative in others.
+    segment_size = 8
+    device_offset = trial_idx % segment_size
+    segment = trial_idx // segment_size
+    source = int(TRIAL_DEVICES[device_offset])
+    positive_offsets = {(2 * segment + offset) % segment_size for offset in range(4)}
+    label = int(device_offset in positive_offsets)
+    return source, label
+
+
+def neutral_query_feature(rng):
+    return jitter(rng, NEUTRAL, 0.025)
+
+
+def filler_feature(rng):
+    return jitter(rng, NEUTRAL, 0.08)
+
+
+def filler_edge(rng, trial_source):
+    available = FILLER_DEVICES[FILLER_DEVICES != trial_source]
+    source = int(rng.choice(available))
+    if rng.random() < 0.8:
+        destination = int(rng.choice(SERVERS))
+    else:
+        destination = int(rng.choice(available))
+    return source, destination, filler_feature(rng)
+
+
+def last_event_history(rng, label):
+    history = []
+    old_signal = LAST_NEG * 3.0 if label else LAST_POS * 3.0
+    last_signal = LAST_POS if label else LAST_NEG
+
+    for idx in range(HISTORY_SIZE - 1):
+        if idx % 4 == 0:
+            feature = jitter(rng, old_signal, 0.12)
+        elif idx % 4 == 1:
+            feature = jitter(rng, NEUTRAL, 0.35)
+        else:
+            feature = jitter(rng, old_signal * 0.55, 0.18)
+        history.append(feature)
+
+    # Only the final message carries the correct state. Older messages are deliberately stale.
+    history.append(jitter(rng, last_signal, 0.08))
+    return history
+
+
+def persistent_mean_history(rng, label):
+    majority = PERSISTENT_POS if label else PERSISTENT_NEG
+    minority = PERSISTENT_NEG if label else PERSISTENT_POS
+    history = []
+
+    # The class is the average of many weak messages. The final message and the
+    # high-magnitude distractors are intentionally non-diagnostic.
+    message_types = (
+        ["majority"] * 74
+        + ["minority"] * 42
+        + ["distractor"] * 11
+        + ["neutral"]
+    )
+    rng.shuffle(message_types)
+    message_types[-1] = "neutral"
+
+    for message_type in message_types:
+        if message_type == "majority":
+            history.append(jitter(rng, majority, 0.16))
+        elif message_type == "minority":
+            history.append(jitter(rng, minority, 0.16))
+        elif message_type == "distractor":
+            sign = 1.0 if rng.random() < 0.5 else -1.0
+            history.append(jitter(rng, sign * PERSISTENT_DISTRACTOR, 0.08))
+        else:
+            history.append(jitter(rng, NEUTRAL, 0.18))
+
+    return history
+
+
+def rare_spike_history(rng, label):
+    history = [jitter(rng, NEUTRAL, 0.45) for _ in range(HISTORY_SIZE)]
+    spike_positions = rng.choice(np.arange(8, HISTORY_SIZE - 8), size=4, replace=False)
+    spike = SPIKE_POS if label else SPIKE_NEG
+
+    for pos in spike_positions:
+        history[pos] = jitter(rng, spike, 0.06)
+
+    # Keep the last message non-diagnostic so LastMessageAggregator cannot solve it.
+    history[-1] = jitter(rng, NEUTRAL, 0.20)
+    return history
+
+
+def ordered_pattern_history(rng, label):
+    history = [jitter(rng, NEUTRAL, 0.18) for _ in range(HISTORY_SIZE)]
+
+    # Same multiset and same final token in both classes. Only temporal order differs:
+    # positive = A -> B -> C; negative = B -> A -> C.
+    pattern = [ORDER_A, ORDER_B, ORDER_C] if label else [ORDER_B, ORDER_A, ORDER_C]
+    positions = [HISTORY_SIZE - 9, HISTORY_SIZE - 5, HISTORY_SIZE - 1]
+
+    for pos, token in zip(positions, pattern):
+        history[pos] = jitter(rng, token, 0.05)
+
+    # Add balanced older decoys so simple counts and magnitudes stay uninformative.
+    decoy_positions = rng.choice(np.arange(8, HISTORY_SIZE - 16), size=9, replace=False)
+    decoys = [ORDER_A, ORDER_B, ORDER_C] * 3
+    rng.shuffle(decoys)
+    for pos, token in zip(decoy_positions, decoys):
+        history[pos] = jitter(rng, token, 0.10)
+
+    return history
+
+
+def build_history(rng, mode, label):
+    if mode == "last_event":
+        return last_event_history(rng, label)
+    if mode == "persistent_mean":
+        return persistent_mean_history(rng, label)
+    if mode == "rare_spike":
+        return rare_spike_history(rng, label)
+    if mode == "ordered_pattern":
+        return ordered_pattern_history(rng, label)
+    raise ValueError(f"Unknown isolated toy mode: {mode}")
+
+
+def generate_isolated_dataset(mode, seed, num_trials=DEFAULT_TRIALS):
+    rng = np.random.default_rng(seed)
+    rows = []
+    timestamp = 0.0
+
+    for trial_idx in range(num_trials):
+        source, label = trial_source_and_label(trial_idx)
+        query_destination = int(SERVERS[trial_idx % len(SERVERS)])
+        history = build_history(rng, mode, label)
+
+        # Batch A: all messages for the same source node. These are the messages
+        # the aggregator compresses before the query batch starts.
+        for feature in history:
+            timestamp += 1.0
+            destination = int(rng.choice(SERVERS))
+            append_event(rows, source, destination, timestamp, feature, 0)
+
+        # Batch B, first half: neutral current-edge features. The answer is in memory/history.
+        for _ in range(QUERY_SIZE):
+            timestamp += 1.0
+            append_event(rows, source, query_destination, timestamp, neutral_query_feature(rng), label)
+
+        # Batch B, second half: neutral filler for other nodes, preserving batch alignment.
+        for _ in range(FILLER_SIZE):
+            timestamp += 1.0
+            filler_source, filler_destination, feature = filler_edge(rng, source)
+            append_event(rows, filler_source, filler_destination, timestamp, feature, 0)
+
+    return pd.DataFrame(rows)
+
+
+def write_preprocessed_dataset(df, data_name, output_dir):
+    ml_df = df[["u", "i", "ts", "label"]].copy()
+    ml_df["idx"] = np.arange(len(ml_df))
+
+    # Match the existing non-bipartite toy preprocessing: reserve row 0 for padding.
+    ml_df["u"] = ml_df["u"] + 1
+    ml_df["i"] = ml_df["i"] + 1
+    ml_df["idx"] = ml_df["idx"] + 1
+
+    features = df[[f"f{idx}" for idx in range(FEATURE_DIM)]].to_numpy(dtype=float)
+    features = np.vstack([np.zeros((1, FEATURE_DIM)), features])
+
+    max_node_idx = int(max(ml_df["u"].max(), ml_df["i"].max()))
+    node_features = np.zeros((max_node_idx + 1, NODE_FEATURE_DIM))
+
+    ml_df.to_csv(output_dir / f"ml_{data_name}.csv", index=False)
+    np.save(output_dir / f"ml_{data_name}.npy", features)
+    np.save(output_dir / f"ml_{data_name}_node.npy", node_features)
+
+
+def validate_splits(data_name, df):
+    val_time, test_time = np.quantile(df["ts"], [0.70, 0.85])
+    splits = {
+        "train": df[df["ts"] <= val_time],
+        "val": df[(df["ts"] > val_time) & (df["ts"] <= test_time)],
+        "test": df[df["ts"] > test_time],
+    }
+    split_text = []
+    for split_name, split_df in splits.items():
+        positives = int(split_df["label"].sum())
+        rate = positives / max(1, len(split_df))
+        split_text.append(f"{split_name}={positives}/{len(split_df)} ({rate:.1%})")
+
+    total_pos = int(df["label"].sum())
+    print(
+        f"{data_name}: {len(df)} edges | {total_pos} positives "
+        f"({total_pos / len(df):.1%}) | " + " | ".join(split_text)
+    )
+
+
+def generate_all(output_dir, num_trials):
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for data_name, mode, seed in DATASET_CONFIGS:
+        df = generate_isolated_dataset(mode=mode, seed=seed, num_trials=num_trials)
+        df.to_csv(output_dir / f"{data_name}.csv", index=False)
+        write_preprocessed_dataset(df, data_name, output_dir)
+        validate_splits(data_name, df)
+
+
+def parse_args():
+    parser = argparse.ArgumentParser("Generate isolated TGN aggregator toy datasets")
+    parser.add_argument("--output-dir", default="./data",
+                        help="Directory where raw and preprocessed toy datasets are written.")
+    parser.add_argument("--num-trials", type=int, default=DEFAULT_TRIALS,
+                        help="Number of two-batch trials per dataset.")
+    return parser.parse_args()
+
+
+if __name__ == "__main__":
+    args = parse_args()
+    generate_all(Path(args.output_dir), args.num_trials)

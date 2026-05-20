@@ -24,10 +24,10 @@ from export_results_to_excel import (
 
 DEFAULT_OUTPUT_NAME = "tgn_supervised_report.xlsx"
 DEFAULT_DATASETS = [
-    "toy_markov",
-    "toy_iid",
-    "toy_mixed_noise",
-    "toy_sequential",
+    "toy_last_event",
+    "toy_persistent_mean",
+    "toy_rare_spike",
+    "toy_ordered_pattern",
 ]
 DEFAULT_PREDICTION_TASK = "edge_label_classification"
 
