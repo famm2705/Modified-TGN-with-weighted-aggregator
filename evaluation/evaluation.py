@@ -12,7 +12,7 @@ def eval_edge_prediction(model, negative_edge_sampler, data, n_neighbors, batch_
   assert negative_edge_sampler.seed is not None
   negative_edge_sampler.reset_random_state()
 
-  val_ap, val_auc = [], []
+  val_ap, val_auc, val_acc, val_precision, val_recall, val_f1, val_mrr = [], [], [], [], [], [], []
   with torch.no_grad():
     model = model.eval()
     # While usually the test batch size is as big as it fits in memory, here we keep it the same
@@ -40,11 +40,26 @@ def eval_edge_prediction(model, negative_edge_sampler, data, n_neighbors, batch_
 
       pred_score = np.concatenate([(pos_prob).cpu().numpy(), (neg_prob).cpu().numpy()])
       true_label = np.concatenate([np.ones(size), np.zeros(size)])
+      pred_label = (pred_score >= 0.5).astype(int)
 
       val_ap.append(average_precision_score(true_label, pred_score))
       val_auc.append(roc_auc_score(true_label, pred_score))
+      val_acc.append(accuracy_score(true_label, pred_label))
+      val_precision.append(precision_score(true_label, pred_label, zero_division=0))
+      val_recall.append(recall_score(true_label, pred_label, zero_division=0))
+      val_f1.append(f1_score(true_label, pred_label, zero_division=0))
+      ranks = 1.0 + (neg_prob > pos_prob).float().cpu().numpy()
+      val_mrr.append(np.mean(1.0 / ranks))
 
-  return np.mean(val_ap), np.mean(val_auc)
+  return (
+    np.mean(val_ap),
+    np.mean(val_auc),
+    np.mean(val_acc),
+    np.mean(val_precision),
+    np.mean(val_recall),
+    np.mean(val_f1),
+    np.mean(val_mrr),
+  )
 
 
 def binary_classification_metrics(labels, pred_prob):
