@@ -4,7 +4,34 @@ import torch
 import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_scatter import scatter_softmax, scatter_add, scatter_mean
+
+try:
+    from torch_scatter import scatter_softmax, scatter_add, scatter_mean
+except ModuleNotFoundError:
+    def scatter_add(src, index, dim=0, dim_size=None):
+        if dim != 0:
+            raise NotImplementedError("Local scatter_add fallback only supports dim=0")
+        if dim_size is None:
+            dim_size = int(index.max().item()) + 1 if index.numel() else 0
+        out = torch.zeros((dim_size, *src.shape[1:]), dtype=src.dtype, device=src.device)
+        return out.index_add_(0, index.long(), src)
+
+    def scatter_mean(src, index, dim=0, dim_size=None):
+        if dim != 0:
+            raise NotImplementedError("Local scatter_mean fallback only supports dim=0")
+        summed = scatter_add(src, index, dim=dim, dim_size=dim_size)
+        counts = torch.zeros(summed.shape[0], dtype=src.dtype, device=src.device)
+        ones = torch.ones(index.shape[0], dtype=src.dtype, device=src.device)
+        counts.index_add_(0, index.long(), ones)
+        counts = counts.clamp_min(1).view(-1, *([1] * (src.dim() - 1)))
+        return summed / counts
+
+    def scatter_softmax(src, index):
+        out = torch.empty_like(src)
+        for group in torch.unique(index):
+            mask = index == group
+            out[mask] = torch.softmax(src[mask], dim=0)
+        return out
 
 
 class MessageAggregator(torch.nn.Module):
@@ -171,7 +198,7 @@ class AttentionMessageAggregator(MessageAggregator):
         K = self.k_proj(padding_message).view(num_unique_nodes, padding_length, self.n_heads, head_dimension).permute(0, 2, 3, 1)
         V = self.v_proj(padding_message).view(num_unique_nodes, padding_length, self.n_heads, head_dimension).permute(0, 2, 1, 3)
 
-        scale = 1.0 / torch.sqrt(torch.tensor(head_dimension, dtype=torch.float32))
+        scale = head_dimension ** -0.5
         attn = torch.matmul(Q, K) * scale
 
         if attention_mask is not None:

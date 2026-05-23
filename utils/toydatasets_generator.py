@@ -4,6 +4,11 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+try:
+    from utils.paths import get_data_dir
+except ModuleNotFoundError:
+    from paths import get_data_dir
+
 
 # These datasets are intentionally block-structured for TGN's memory update schedule.
 # With bs=128, each trial writes one full history batch followed by one query batch.
@@ -267,7 +272,7 @@ def generate_all(output_dir, num_trials):
 
 def parse_args():
     parser = argparse.ArgumentParser("Generate isolated TGN aggregator toy datasets")
-    parser.add_argument("--output-dir", default="./data",
+    parser.add_argument("--output-dir", default=str(get_data_dir()),
                         help="Directory where raw and preprocessed toy datasets are written.")
     parser.add_argument("--num-trials", type=int, default=DEFAULT_TRIALS,
                         help="Number of two-batch trials per dataset.")

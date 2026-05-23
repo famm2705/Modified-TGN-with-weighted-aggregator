@@ -21,11 +21,85 @@ Multiple choices can be considered for implementing the Message Aggregator modul
 |-train_supervised.py add attention for argument --aggregator
 ```
 
+### Install locally
+The project is standard Python and is not tied to Windows. Use the activation command for your shell:
+
+Windows PowerShell:
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+```
+
+Linux, macOS, WSL, and Colab:
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+```
+
+For CUDA-specific PyTorch wheels, install the matching `torch` build first, then run `pip install -r requirements.txt`.
+
 ### Preprocess the data
 We use the dense `npy` format to save the features in binary format. If edge features or nodes 
 features are absent, they will be replaced by a vector of zeros. 
 ```{bash}
 python utils/preprocess_data.py --data wikipedia --bipartite
+```
+
+### Local and Colab paths
+The scripts no longer require Google Drive paths. By default:
+- Data is read from and written to `<repo>/data`.
+- Local training outputs go to `<repo>/outputs/tgn_models`, `<repo>/outputs/tgn_results`, and `<repo>/outputs/tgn_reports`.
+- In Colab, if Google Drive is mounted at `/content/drive/MyDrive`, training and report outputs use `/content/drive/MyDrive/tgn_models`, `/content/drive/MyDrive/tgn_results`, and `/content/drive/MyDrive/tgn_reports`.
+
+Override paths with CLI flags when needed:
+```{bash}
+python train_self_supervised.py --data wikipedia --use_memory \
+  --data-dir ./data --output-root ./outputs
+
+python train_supervised.py --data wikipedia --use_memory \
+  --data-dir ./data --output-root ./outputs
+
+python export_results_to_excel.py \
+  --results-dir ./outputs/tgn_results --output-dir ./outputs/tgn_reports
+```
+
+Use `--model-dir`, `--results-dir`, or `--log-dir` when you need to override one output directory specifically. The same defaults can be overridden with environment variables: `TGN_DATA_DIR`, `TGN_OUTPUT_ROOT`, `TGN_MODEL_DIR`, `TGN_RESULTS_DIR`, `TGN_REPORTS_DIR`, and `TGN_LOG_DIR`.
+
+### Isolated toy aggregator experiments
+Use the Python runner instead of the old shell command lists for the current isolated datasets. By default it creates a new timestamped experiment folder, generates missing toy data, runs the full `4 datasets x 4 aggregators x 10 runs` self-supervised matrix, then runs the matching supervised jobs from the corresponding encoder checkpoints.
+
+```{bash}
+python run_isolated_experiments.py
+```
+
+Each experiment writes isolated `models`, `results`, `reports`, and `logs` subfolders. On Colab, when Google Drive is mounted, the default parent is `/content/drive/MyDrive/tgn_experiment_runs`; otherwise it is `outputs/experiment_runs`.
+
+To keep the large per-epoch early-stopping checkpoints on the Colab runtime disk while saving final models, results, reports, and logs to Drive:
+```{bash}
+python -u run_isolated_experiments.py \
+  --regenerate-data \
+  --checkpoints-on-runtime
+```
+
+With this layout, final encoder/decoder files are saved in the Drive experiment `models` folder, while temporary checkpoints go to `/content/tgn_experiment_checkpoints/<experiment-name>/checkpoints`.
+
+Useful smaller runs:
+```{bash}
+# Only intended dataset/aggregator pairs
+python run_isolated_experiments.py --pairs-only
+
+# Regenerate isolated toy datasets before training
+python run_isolated_experiments.py --regenerate-data
+
+# Inspect commands without launching training
+python run_isolated_experiments.py --pairs-only --n-runs 1 --dry-run
+```
+
+From MATLAB:
+```matlab
+system("python run_isolated_experiments.py --pairs-only")
 ```
 
 ### Training on Wikipedia Dataset

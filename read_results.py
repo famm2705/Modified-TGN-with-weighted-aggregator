@@ -3,7 +3,7 @@ import pickle
 import numpy as np
 from pathlib import Path
 
-BASE_PATH = "/content/drive/MyDrive/tgn_results"
+from utils.paths import get_results_dir
 
 parser = argparse.ArgumentParser("Read TGN experiment results")
 parser.add_argument(
@@ -17,22 +17,26 @@ parser.add_argument(
     "--data",
     type=str,
     required=True,
-    choices=["toy_markov", "toy_iid", "toy_mixed_noise", "toy_sequential"],
     help="Dataset name"
 )
 parser.add_argument(
     "--prefix",
     type=str,
     required=True,
-    choices=["markov", "iid", "mixed_noise", "sequential"],
     help="Prefix used during training (matches dataset mode)"
+)
+parser.add_argument(
+    "--results-dir",
+    default=None,
+    help="Directory containing result pickle files."
 )
 
 args = parser.parse_args()
+RESULTS_DIR = get_results_dir(args.results_dir)
 
 # Matches the naming convention in train_self_supervised.py:
 # f"{RESULTS_PATH}/{args.prefix}_{args.data}_{args.aggregator}.pkl"
-file_path = f"{BASE_PATH}/{args.prefix}_{args.data}_{args.agg}.pkl"
+file_path = RESULTS_DIR / f"{args.prefix}_{args.data}_{args.agg}.pkl"
 
 if not Path(file_path).exists():
     raise FileNotFoundError(f"Results file not found: {file_path}")

@@ -1,8 +1,12 @@
 import json
 import numpy as np
 import pandas as pd
-from pathlib import Path
 import argparse
+
+try:
+  from utils.paths import get_data_dir
+except ModuleNotFoundError:
+  from paths import get_data_dir
 
 
 def preprocess(data_name):
@@ -57,12 +61,13 @@ def reindex(df, bipartite=True):
   return new_df
 
 
-def run(data_name, bipartite=True):
-  Path("data/").mkdir(parents=True, exist_ok=True)
-  PATH = './data/{}.csv'.format(data_name)
-  OUT_DF = './data/ml_{}.csv'.format(data_name)
-  OUT_FEAT = './data/ml_{}.npy'.format(data_name)
-  OUT_NODE_FEAT = './data/ml_{}_node.npy'.format(data_name)
+def run(data_name, bipartite=True, data_dir=None):
+  data_dir = get_data_dir(data_dir)
+  data_dir.mkdir(parents=True, exist_ok=True)
+  PATH = data_dir / f"{data_name}.csv"
+  OUT_DF = data_dir / f"ml_{data_name}.csv"
+  OUT_FEAT = data_dir / f"ml_{data_name}.npy"
+  OUT_NODE_FEAT = data_dir / f"ml_{data_name}_node.npy"
 
   df, feat = preprocess(PATH)
   new_df = reindex(df, bipartite)
@@ -81,7 +86,9 @@ parser = argparse.ArgumentParser('Interface for TGN data preprocessing')
 parser.add_argument('--data', type=str, help='Dataset name (eg. wikipedia or reddit)',
                     default='wikipedia')
 parser.add_argument('--bipartite', action='store_true', help='Whether the graph is bipartite')
+parser.add_argument('--data-dir', default=None,
+                    help='Directory containing raw CSVs and receiving preprocessed files.')
 
 args = parser.parse_args()
 
-run(args.data, bipartite=args.bipartite)
+run(args.data, bipartite=args.bipartite, data_dir=args.data_dir)

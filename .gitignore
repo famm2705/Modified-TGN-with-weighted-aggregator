@@ -8,6 +8,12 @@ results/
 saved_checkpoints/
 saved_models/
 data/
+outputs/
+tgn_models/
+tgn_results/
+tgn_reports/
+tgn_logs/
+tgn_checkpoints/
 .DS_Store
 
 ### PyCharm ###

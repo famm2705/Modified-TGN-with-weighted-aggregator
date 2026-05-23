@@ -7,22 +7,24 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from utils.paths import get_reports_dir, get_results_dir
+
 try:
     from scipy import stats
 except ImportError:
     stats = None
 
-DEFAULT_RESULTS_DIR = "/content/drive/MyDrive/tgn_results"
-DEFAULT_OUTPUT_DIR = "/content/drive/MyDrive/tgn_reports"
+DEFAULT_RESULTS_DIR = str(get_results_dir())
+DEFAULT_OUTPUT_DIR = str(get_reports_dir())
 DEFAULT_OUTPUT_NAME = "tgn_aggregator_report.xlsx"
 DEFAULT_CONFIDENCE = 0.95
 DEFAULT_EXPECTED_RUNS = 10
 
 DEFAULT_DATASETS = [
-    "iomt_abrupt_last",
-    "iomt_persistent_mean",
-    "iomt_rare_weighted",
-    "iomt_ordered_attention",
+    "toy_last_event",
+    "toy_persistent_mean",
+    "toy_rare_spike",
+    "toy_ordered_pattern",
 ]
 DEFAULT_AGGREGATORS = ["last", "mean", "weightedmean", "attention"]
 
@@ -54,7 +56,7 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description=(
             "Build clean CSV and Excel summaries from TGN result pickle files. "
-            "Defaults target the generated IoMT extreme datasets."
+            "Defaults target the isolated toy aggregator datasets."
         )
     )
     parser.add_argument("--results-dir", default=DEFAULT_RESULTS_DIR,

@@ -15,6 +15,7 @@ from tgn import TGN
 from utils.utils import EarlyStopMonitor, get_neighbor_finder, MLP
 from utils.data_processing import compute_time_statistics, get_data_node_classification
 from evaluation.evaluation import eval_edge_label_prediction
+from utils.paths import get_checkpoints_dir, get_data_dir, get_logs_dir, get_models_dir, get_project_root, get_results_dir
 
 random.seed(0)
 np.random.seed(0)
@@ -69,6 +70,18 @@ parser.add_argument('--learnable', action="store_true",
                     help="Whether Message Aggregator is learnable module")
 parser.add_argument('--add_cls_token', action="store_true",
                     help="Apend cls token like BERT to represent the final message")
+parser.add_argument('--data-dir', default=None,
+                    help='Directory containing preprocessed ml_<dataset> files.')
+parser.add_argument('--output-root', default=None,
+                    help='Root directory for default model/result outputs.')
+parser.add_argument('--model-dir', default=None,
+                    help='Directory containing encoder checkpoints and receiving decoder checkpoints.')
+parser.add_argument('--checkpoint-dir', default=None,
+                    help='Directory for per-epoch decoder early-stopping checkpoints. Defaults to --model-dir.')
+parser.add_argument('--results-dir', default=None,
+                    help='Directory for supervised result pickle files and metrics CSVs.')
+parser.add_argument('--log-dir', default=None,
+                    help='Directory for training log files.')
 
 try:
   args = parser.parse_args()
@@ -96,25 +109,29 @@ USE_MEMORY = args.use_memory
 MESSAGE_DIM = args.message_dim
 MEMORY_DIM = args.memory_dim
 
-MODEL_BASE_PATH = "/content/drive/MyDrive/tgn_models"
-RESULTS_PATH = "/content/drive/MyDrive/tgn_results"
-Path(MODEL_BASE_PATH).mkdir(parents=True, exist_ok=True)
-Path(RESULTS_PATH).mkdir(parents=True, exist_ok=True)
+DATA_DIR = get_data_dir(args.data_dir)
+MODEL_BASE_PATH = get_models_dir(args.model_dir, args.output_root)
+CHECKPOINT_BASE_PATH = get_checkpoints_dir(args.checkpoint_dir, args.model_dir, args.output_root)
+RESULTS_PATH = get_results_dir(args.results_dir, args.output_root)
+MODEL_BASE_PATH.mkdir(parents=True, exist_ok=True)
+CHECKPOINT_BASE_PATH.mkdir(parents=True, exist_ok=True)
+RESULTS_PATH.mkdir(parents=True, exist_ok=True)
 
-ENCODER_MODEL_PATH = f'{MODEL_BASE_PATH}/{args.prefix}_{args.data}_{args.aggregator}.pth'
+ENCODER_MODEL_PATH = MODEL_BASE_PATH / f'{args.prefix}_{args.data}_{args.aggregator}.pth'
 DECODER_MODEL_SAVE_PATH = (
-  f'{MODEL_BASE_PATH}/supervised_{args.prefix}_{args.data}_{args.aggregator}_edge_label_decoder.pth'
+  MODEL_BASE_PATH / f'supervised_{args.prefix}_{args.data}_{args.aggregator}_edge_label_decoder.pth'
 )
 get_checkpoint_path = lambda epoch: (
-  f'{MODEL_BASE_PATH}/supervised_{args.prefix}_{args.data}_{args.aggregator}_edge_label_decoder_{epoch}.pth'
+  CHECKPOINT_BASE_PATH / f'supervised_{args.prefix}_{args.data}_{args.aggregator}_edge_label_decoder_{epoch}.pth'
 )
 
 ### set up logger
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger()
 logger.setLevel(logging.DEBUG)
-Path("log/").mkdir(parents=True, exist_ok=True)
-fh = logging.FileHandler('log/{}.log'.format(str(time.time())))
+LOG_DIR = get_logs_dir(args.log_dir, args.output_root)
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+fh = logging.FileHandler(LOG_DIR / '{}.log'.format(str(time.time())))
 fh.setLevel(logging.DEBUG)
 ch = logging.StreamHandler()
 ch.setLevel(logging.WARN)
@@ -126,7 +143,7 @@ logger.addHandler(ch)
 logger.info(args)
 
 full_data, node_features, edge_features, train_data, val_data, test_data = \
-  get_data_node_classification(DATA, use_validation=args.use_validation)
+  get_data_node_classification(DATA, use_validation=args.use_validation, data_dir=DATA_DIR)
 
 max_idx = max(full_data.unique_nodes)
 
@@ -144,12 +161,12 @@ mean_time_shift_src, std_time_shift_src, mean_time_shift_dst, std_time_shift_dst
 
 for i in range(args.n_runs):
   results_path = (
-    f"{RESULTS_PATH}/supervised_{args.prefix}_{args.data}_{args.aggregator}_edge_label_classification_{i}.pkl"
+    RESULTS_PATH / f"supervised_{args.prefix}_{args.data}_{args.aggregator}_edge_label_classification_{i}.pkl"
     if i > 0
-    else f"{RESULTS_PATH}/supervised_{args.prefix}_{args.data}_{args.aggregator}_edge_label_classification.pkl"
+    else RESULTS_PATH / f"supervised_{args.prefix}_{args.data}_{args.aggregator}_edge_label_classification.pkl"
   )
 
-  csv_path = f"{RESULTS_PATH}/supervised_{args.prefix}_{args.data}_{args.aggregator}_edge_label_classification_metrics.csv"
+  csv_path = RESULTS_PATH / f"supervised_{args.prefix}_{args.data}_{args.aggregator}_edge_label_classification_metrics.csv"
   if not Path(csv_path).exists():
     with open(csv_path, "w", newline="") as f:
       writer = csv.writer(f)
@@ -280,8 +297,8 @@ for i in range(args.n_runs):
       "epoch_times": epoch_times,
       "total_epoch_times": total_epoch_times,
       "new_nodes_val_aps": [],
-      "source_encoder_model": ENCODER_MODEL_PATH,
-      "decoder_model": DECODER_MODEL_SAVE_PATH,
+      "source_encoder_model": str(ENCODER_MODEL_PATH),
+      "decoder_model": str(DECODER_MODEL_SAVE_PATH),
       "prediction_task": "edge_label_classification",
       "edge_decoder_input_dim": EDGE_DECODER_INPUT_DIM,
     }, open(results_path, "wb"))
@@ -357,8 +374,8 @@ for i in range(args.n_runs):
     "total_epoch_times": total_epoch_times,
     "new_nodes_val_aps": [],
     "new_node_test_ap": 0,
-    "source_encoder_model": ENCODER_MODEL_PATH,
-    "decoder_model": DECODER_MODEL_SAVE_PATH,
+    "source_encoder_model": str(ENCODER_MODEL_PATH),
+    "decoder_model": str(DECODER_MODEL_SAVE_PATH),
     "prediction_task": "edge_label_classification",
     "edge_decoder_input_dim": EDGE_DECODER_INPUT_DIM,
   }, open(results_path, "wb"))

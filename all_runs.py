@@ -2,12 +2,34 @@ import pickle
 import numpy as np
 from pathlib import Path
 import csv
+import argparse
 
-BASE_PATH = "/content/drive/MyDrive/tgn_results"
+from utils.paths import get_results_dir
 
-DATASETS    = ["toy_markov", "toy_iid", "toy_mixed_noise", "toy_sequential"]
-PREFIXES    = ["markov",     "iid",     "mixed_noise",      "sequential"]
-AGGREGATORS = ["last", "mean", "weightedmean", "attention"]
+parser = argparse.ArgumentParser("Flatten TGN experiment runs into a CSV")
+parser.add_argument("--results-dir", default=None,
+                    help="Directory containing result pickle files.")
+parser.add_argument("--datasets", nargs="*", default=None,
+                    help="Dataset names to include.")
+parser.add_argument("--prefixes", nargs="*", default=None,
+                    help="Prefixes matching --datasets. Defaults to empty prefixes.")
+parser.add_argument("--aggregators", nargs="*", default=None,
+                    help="Aggregator names to include.")
+args = parser.parse_args()
+
+BASE_PATH = get_results_dir(args.results_dir)
+
+DEFAULT_DATASETS = ["toy_markov", "toy_iid", "toy_mixed_noise", "toy_sequential"]
+DEFAULT_PREFIXES = ["markov", "iid", "mixed_noise", "sequential"]
+
+DATASETS = args.datasets or DEFAULT_DATASETS
+PREFIXES = args.prefixes or (DEFAULT_PREFIXES if args.datasets is None else [""] * len(DATASETS))
+AGGREGATORS = args.aggregators or ["last", "mean", "weightedmean", "attention"]
+
+if len(PREFIXES) != len(DATASETS):
+    raise ValueError("--prefixes must have the same number of values as --datasets")
+
+BASE_PATH.mkdir(parents=True, exist_ok=True)
 
 
 def load_runs(prefix, dataset, aggregator):

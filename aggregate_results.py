@@ -3,12 +3,34 @@ import numpy as np
 from pathlib import Path
 from scipy import stats
 import csv
+import argparse
 
-BASE_PATH = "/content/drive/MyDrive/tgn_results"
+from utils.paths import get_results_dir
 
-DATASETS    = ["toy_markov", "toy_iid", "toy_mixed_noise", "toy_sequential"]
-PREFIXES    = ["markov",     "iid",     "mixed_noise",      "sequential"]
-AGGREGATORS = ["last", "mean", "weightedmean", "attention"]
+parser = argparse.ArgumentParser("Aggregate TGN experiment runs")
+parser.add_argument("--results-dir", default=None,
+                    help="Directory containing result pickle files.")
+parser.add_argument("--datasets", nargs="*", default=None,
+                    help="Dataset names to include.")
+parser.add_argument("--prefixes", nargs="*", default=None,
+                    help="Prefixes matching --datasets. Defaults to empty prefixes.")
+parser.add_argument("--aggregators", nargs="*", default=None,
+                    help="Aggregator names to include.")
+args = parser.parse_args()
+
+BASE_PATH = get_results_dir(args.results_dir)
+
+DEFAULT_DATASETS = ["toy_markov", "toy_iid", "toy_mixed_noise", "toy_sequential"]
+DEFAULT_PREFIXES = ["markov", "iid", "mixed_noise", "sequential"]
+
+DATASETS = args.datasets or DEFAULT_DATASETS
+PREFIXES = args.prefixes or (DEFAULT_PREFIXES if args.datasets is None else [""] * len(DATASETS))
+AGGREGATORS = args.aggregators or ["last", "mean", "weightedmean", "attention"]
+
+if len(PREFIXES) != len(DATASETS):
+    raise ValueError("--prefixes must have the same number of values as --datasets")
+
+BASE_PATH.mkdir(parents=True, exist_ok=True)
 
 METRICS = ["test_ap", "test_auc", "test_acc", "test_prec", "test_rec", "test_f1", "test_mrr",
            "new_node_test_ap", "new_node_test_auc"]
@@ -167,7 +189,8 @@ for dataset in DATASETS:
     if best_agg:
         m, s, lo, hi = results[dataset][best_agg].get("test_ap", (None,)*4)
         ci_str = f"  95% CI [{lo:.4f}, {hi:.4f}]" if lo is not None else ""
-        print(f"  {dataset:<25} → {best_agg:<14} AP = {m:.4f} ± {s:.4f if s else 0:.4f}{ci_str}")
+        std = s if s is not None else 0.0
+        print(f"  {dataset:<25} -> {best_agg:<14} AP = {m:.4f} +/- {std:.4f}{ci_str}")
 
 
 # ── Overlap check ────────────────────────────────────────────────────────────

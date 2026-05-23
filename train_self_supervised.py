@@ -14,6 +14,7 @@ from evaluation.evaluation import eval_edge_prediction
 from tgn import TGN
 from utils.utils import EarlyStopMonitor, RandEdgeSampler, get_neighbor_finder
 from utils.data_processing import get_data, compute_time_statistics
+from utils.paths import get_checkpoints_dir, get_data_dir, get_logs_dir, get_models_dir, get_project_root, get_results_dir
 
 torch.manual_seed(0)
 np.random.seed(0)
@@ -67,6 +68,18 @@ parser.add_argument('--learnable', action="store_true",
                     help="Whether Message Aggregator is learnable module")
 parser.add_argument('--add_cls_token', action="store_true",
                     help="Apend cls token like BERT to represent the final message")
+parser.add_argument('--data-dir', default=None,
+                    help='Directory containing preprocessed ml_<dataset> files.')
+parser.add_argument('--output-root', default=None,
+                    help='Root directory for default model/result outputs.')
+parser.add_argument('--model-dir', default=None,
+                    help='Directory for saved models and per-epoch checkpoints.')
+parser.add_argument('--checkpoint-dir', default=None,
+                    help='Directory for per-epoch early-stopping checkpoints. Defaults to --model-dir.')
+parser.add_argument('--results-dir', default=None,
+                    help='Directory for result pickle files and metrics CSVs.')
+parser.add_argument('--log-dir', default=None,
+                    help='Directory for training log files.')
 
 
 try:
@@ -91,21 +104,27 @@ USE_MEMORY = args.use_memory
 MESSAGE_DIM = args.message_dim
 MEMORY_DIM = args.memory_dim
 
-BASE_PATH = "/content/drive/MyDrive/tgn_models"
-Path(BASE_PATH).mkdir(parents=True, exist_ok=True)
+DATA_DIR = get_data_dir(args.data_dir)
+MODEL_DIR = get_models_dir(args.model_dir, args.output_root)
+CHECKPOINT_DIR = get_checkpoints_dir(args.checkpoint_dir, args.model_dir, args.output_root)
+RESULTS_DIR = get_results_dir(args.results_dir, args.output_root)
+MODEL_DIR.mkdir(parents=True, exist_ok=True)
+CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
+RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Final model
-MODEL_SAVE_PATH = f'{BASE_PATH}/{args.prefix}_{args.data}_{args.aggregator}.pth'
+MODEL_SAVE_PATH = MODEL_DIR / f'{args.prefix}_{args.data}_{args.aggregator}.pth'
 
 # Per-epoch checkpoint
-get_checkpoint_path = lambda epoch: f'{BASE_PATH}/{args.prefix}_{args.data}_{args.aggregator}_{epoch}.pth'
+get_checkpoint_path = lambda epoch: CHECKPOINT_DIR / f'{args.prefix}_{args.data}_{args.aggregator}_{epoch}.pth'
 
 ### set up logger
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger()
 logger.setLevel(logging.DEBUG)
-Path("log/").mkdir(parents=True, exist_ok=True)
-fh = logging.FileHandler('log/{}.log'.format(str(time.time())))
+LOG_DIR = get_logs_dir(args.log_dir, args.output_root)
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+fh = logging.FileHandler(LOG_DIR / '{}.log'.format(str(time.time())))
 fh.setLevel(logging.DEBUG)
 ch = logging.StreamHandler()
 ch.setLevel(logging.WARN)
@@ -119,7 +138,9 @@ logger.info(args)
 ### Extract data for training, validation and testing
 node_features, edge_features, full_data, train_data, val_data, test_data, new_node_val_data, \
 new_node_test_data = get_data(DATA,
-                              different_new_nodes_between_val_and_test=args.different_new_nodes, randomize_features=args.randomize_features)
+                              different_new_nodes_between_val_and_test=args.different_new_nodes,
+                              randomize_features=args.randomize_features,
+                              data_dir=DATA_DIR)
 
 # Initialize training neighbor finder to retrieve temporal graph
 train_ngh_finder = get_neighbor_finder(train_data, args.uniform)
@@ -148,10 +169,7 @@ mean_time_shift_src, std_time_shift_src, mean_time_shift_dst, std_time_shift_dst
   compute_time_statistics(full_data.sources, full_data.destinations, full_data.timestamps)
 
 for i in range(args.n_runs):
-  RESULTS_PATH = "/content/drive/MyDrive/tgn_results"
-  Path(RESULTS_PATH).mkdir(parents=True, exist_ok=True)
-
-  csv_path = f"{RESULTS_PATH}/{args.prefix}_{args.data}_{args.aggregator}_metrics.csv"
+  csv_path = RESULTS_DIR / f"{args.prefix}_{args.data}_{args.aggregator}_metrics.csv"
 
   if not Path(csv_path).exists():
       with open(csv_path, "w", newline="") as f:
@@ -173,9 +191,9 @@ for i in range(args.n_runs):
   
 
   results_path = (
-    f"{RESULTS_PATH}/{args.prefix}_{args.data}_{args.aggregator}_{i}.pkl"
+    RESULTS_DIR / f"{args.prefix}_{args.data}_{args.aggregator}_{i}.pkl"
     if i > 0
-    else f"{RESULTS_PATH}/{args.prefix}_{args.data}_{args.aggregator}.pkl"
+    else RESULTS_DIR / f"{args.prefix}_{args.data}_{args.aggregator}.pkl"
 )
 
   # Initialize Model
@@ -360,7 +378,7 @@ model=tgn,
       logger.info('No improvement over {} epochs, stop training'.format(early_stopper.max_round))
       logger.info(f'Loading the best model at epoch {early_stopper.best_epoch}')
       best_model_path = get_checkpoint_path(early_stopper.best_epoch)
-      tgn.load_state_dict(torch.load(best_model_path))
+      tgn.load_state_dict(torch.load(best_model_path, map_location=device))
       logger.info(f'Loaded the best model at epoch {early_stopper.best_epoch} for inference')
       tgn.eval()
       break

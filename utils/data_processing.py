@@ -2,6 +2,11 @@ import numpy as np
 import random
 import pandas as pd
 
+try:
+  from utils.paths import get_data_dir
+except ModuleNotFoundError:
+  from paths import get_data_dir
+
 
 class Data:
   def __init__(self, sources, destinations, timestamps, edge_idxs, labels):
@@ -15,11 +20,29 @@ class Data:
     self.n_unique_nodes = len(self.unique_nodes)
 
 
-def get_data_node_classification(dataset_name, use_validation=False):
+def _dataset_paths(dataset_name, data_dir=None):
+  data_dir = get_data_dir(data_dir)
+  graph_path = data_dir / f"ml_{dataset_name}.csv"
+  edge_features_path = data_dir / f"ml_{dataset_name}.npy"
+  node_features_path = data_dir / f"ml_{dataset_name}_node.npy"
+  missing = [
+    path for path in (graph_path, edge_features_path, node_features_path)
+    if not path.exists()
+  ]
+  if missing:
+    missing_text = "\n  ".join(str(path) for path in missing)
+    raise FileNotFoundError(
+      f"Missing preprocessed dataset files for '{dataset_name}' in {data_dir}:\n  {missing_text}"
+    )
+  return graph_path, edge_features_path, node_features_path
+
+
+def get_data_node_classification(dataset_name, use_validation=False, data_dir=None):
   ### Load data and train val test split
-  graph_df = pd.read_csv('./data/ml_{}.csv'.format(dataset_name))
-  edge_features = np.load('./data/ml_{}.npy'.format(dataset_name))
-  node_features = np.load('./data/ml_{}_node.npy'.format(dataset_name))
+  graph_path, edge_features_path, node_features_path = _dataset_paths(dataset_name, data_dir)
+  graph_df = pd.read_csv(graph_path)
+  edge_features = np.load(edge_features_path)
+  node_features = np.load(node_features_path)
 
   val_time, test_time = list(np.quantile(graph_df.ts, [0.70, 0.85]))
 
@@ -49,11 +72,13 @@ def get_data_node_classification(dataset_name, use_validation=False):
   return full_data, node_features, edge_features, train_data, val_data, test_data
 
 
-def get_data(dataset_name, different_new_nodes_between_val_and_test=False, randomize_features=False):
+def get_data(dataset_name, different_new_nodes_between_val_and_test=False,
+             randomize_features=False, data_dir=None):
   ### Load data and train val test split
-  graph_df = pd.read_csv('./data/ml_{}.csv'.format(dataset_name))
-  edge_features = np.load('./data/ml_{}.npy'.format(dataset_name))
-  node_features = np.load('./data/ml_{}_node.npy'.format(dataset_name)) 
+  graph_path, edge_features_path, node_features_path = _dataset_paths(dataset_name, data_dir)
+  graph_df = pd.read_csv(graph_path)
+  edge_features = np.load(edge_features_path)
+  node_features = np.load(node_features_path)
     
   if randomize_features:
     node_features = np.random.rand(node_features.shape[0], node_features.shape[1])
