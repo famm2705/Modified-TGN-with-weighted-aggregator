@@ -76,14 +76,14 @@ python run_isolated_experiments.py
 
 Each experiment writes isolated `models`, `results`, `reports`, and `logs` subfolders. On Colab, when Google Drive is mounted, the default parent is `/content/drive/MyDrive/tgn_experiment_runs`; otherwise it is `outputs/experiment_runs`.
 
-To keep the large per-epoch early-stopping checkpoints on the Colab runtime disk while saving final models, results, reports, and logs to Drive:
+On Colab, temporary per-epoch early-stopping checkpoints default to `/content/tgn_experiment_checkpoints/<experiment-name>/checkpoints` so they do not fill Drive. Completed jobs delete their per-epoch checkpoints after saving the final model/decoder. You can still pass the flag explicitly:
 ```{bash}
 python -u run_isolated_experiments.py \
   --regenerate-data \
   --checkpoints-on-runtime
 ```
 
-With this layout, final encoder/decoder files are saved in the Drive experiment `models` folder, while temporary checkpoints go to `/content/tgn_experiment_checkpoints/<experiment-name>/checkpoints`.
+With this layout, final encoder/decoder files are saved in the Drive experiment `models` folder, while temporary checkpoints use the Colab runtime disk. Use `--checkpoints-with-models` only if you intentionally want checkpoint files in the experiment `models` folder.
 
 Useful smaller runs:
 ```{bash}

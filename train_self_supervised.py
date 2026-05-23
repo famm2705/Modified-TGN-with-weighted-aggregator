@@ -80,6 +80,8 @@ parser.add_argument('--results-dir', default=None,
                     help='Directory for result pickle files and metrics CSVs.')
 parser.add_argument('--log-dir', default=None,
                     help='Directory for training log files.')
+parser.add_argument('--keep-checkpoints', action='store_true',
+                    help='Keep per-epoch early-stopping checkpoints after the final model is saved.')
 
 
 try:
@@ -117,6 +119,13 @@ MODEL_SAVE_PATH = MODEL_DIR / f'{args.prefix}_{args.data}_{args.aggregator}.pth'
 
 # Per-epoch checkpoint
 get_checkpoint_path = lambda epoch: CHECKPOINT_DIR / f'{args.prefix}_{args.data}_{args.aggregator}_{epoch}.pth'
+
+
+def cleanup_epoch_checkpoints():
+  if args.keep_checkpoints:
+    return
+  for path in CHECKPOINT_DIR.glob(f'{args.prefix}_{args.data}_{args.aggregator}_[0-9]*.pth'):
+    path.unlink(missing_ok=True)
 
 ### set up logger
 logging.basicConfig(level=logging.INFO)
@@ -439,4 +448,5 @@ model=tgn,
     # Restore memory at the end of validation (save a model which is ready for testing)
     tgn.memory.restore_memory(val_memory_backup)
   torch.save(tgn.state_dict(), MODEL_SAVE_PATH)
+  cleanup_epoch_checkpoints()
   logger.info('TGN model saved')

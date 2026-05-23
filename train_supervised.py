@@ -82,6 +82,8 @@ parser.add_argument('--results-dir', default=None,
                     help='Directory for supervised result pickle files and metrics CSVs.')
 parser.add_argument('--log-dir', default=None,
                     help='Directory for training log files.')
+parser.add_argument('--keep-checkpoints', action='store_true',
+                    help='Keep per-epoch decoder early-stopping checkpoints after the final decoder is saved.')
 
 try:
   args = parser.parse_args()
@@ -124,6 +126,14 @@ DECODER_MODEL_SAVE_PATH = (
 get_checkpoint_path = lambda epoch: (
   CHECKPOINT_BASE_PATH / f'supervised_{args.prefix}_{args.data}_{args.aggregator}_edge_label_decoder_{epoch}.pth'
 )
+
+
+def cleanup_epoch_checkpoints():
+  if args.keep_checkpoints:
+    return
+  pattern = f'supervised_{args.prefix}_{args.data}_{args.aggregator}_edge_label_decoder_[0-9]*.pth'
+  for path in CHECKPOINT_BASE_PATH.glob(pattern):
+    path.unlink(missing_ok=True)
 
 ### set up logger
 logging.basicConfig(level=logging.INFO)
@@ -381,6 +391,7 @@ for i in range(args.n_runs):
   }, open(results_path, "wb"))
 
   torch.save(decoder.state_dict(), DECODER_MODEL_SAVE_PATH)
+  cleanup_epoch_checkpoints()
   logger.info(f'Supervised decoder saved to {DECODER_MODEL_SAVE_PATH}')
   logger.info(
     f'test auc: {test_metrics["auc"]}, test ap: {test_metrics["ap"]}, '

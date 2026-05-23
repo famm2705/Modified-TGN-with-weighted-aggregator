@@ -39,6 +39,10 @@ def default_runtime_checkpoint_base():
   return Path("/content/tgn_experiment_checkpoints")
 
 
+def is_colab_runtime():
+  return Path("/content").exists()
+
+
 def parse_args():
   parser = argparse.ArgumentParser(
     description=(
@@ -54,13 +58,19 @@ def parse_args():
   parser.add_argument("--checkpoint-base", default=None,
                       help=(
                         "Parent directory for per-experiment early-stopping checkpoints. "
-                        "Defaults to the experiment models folder."
+                        "Defaults to /content/tgn_experiment_checkpoints on Colab and to "
+                        "the experiment models folder elsewhere."
                       ))
   parser.add_argument("--checkpoints-on-runtime", action="store_true",
                       help=(
                         "Store temporary per-epoch checkpoints under "
                         "/content/tgn_experiment_checkpoints/<experiment-name>/checkpoints. "
                         "Final models, results, reports, and logs still use the experiment folder."
+                      ))
+  parser.add_argument("--checkpoints-with-models", action="store_true",
+                      help=(
+                        "Store per-epoch checkpoints in the experiment models folder. "
+                        "This is not recommended on Colab Drive."
                       ))
   parser.add_argument("--data-dir", default=None,
                       help="Directory containing or receiving preprocessed dataset files.")
@@ -496,8 +506,15 @@ def main():
     raise ValueError("--n-runs must be at least 1.")
   if args.batch_size < 1:
     raise ValueError("--batch-size must be at least 1.")
-  if args.checkpoints_on_runtime and args.checkpoint_base:
-    raise ValueError("Use either --checkpoints-on-runtime or --checkpoint-base, not both.")
+  checkpoint_mode_count = sum([
+    bool(args.checkpoints_on_runtime),
+    bool(args.checkpoints_with_models),
+    bool(args.checkpoint_base),
+  ])
+  if checkpoint_mode_count > 1:
+    raise ValueError(
+      "Use only one of --checkpoints-on-runtime, --checkpoints-with-models, or --checkpoint-base."
+    )
 
   project_root = get_project_root()
   data_dir = Path(args.data_dir).expanduser() if args.data_dir else get_data_dir()
@@ -505,7 +522,7 @@ def main():
   output_base = Path(args.output_base).expanduser() if args.output_base else default_output_base()
   exp_root = output_base / experiment_name
   models_dir = exp_root / "models"
-  if args.checkpoints_on_runtime:
+  if args.checkpoints_on_runtime or (is_colab_runtime() and not args.checkpoints_with_models and not args.checkpoint_base):
     checkpoint_base = default_runtime_checkpoint_base()
     checkpoints_dir = checkpoint_base / experiment_name / "checkpoints"
   elif args.checkpoint_base:
