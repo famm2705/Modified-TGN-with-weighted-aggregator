@@ -94,6 +94,8 @@ def parse_args():
                       help="Number of temporal neighbors sampled by TGN.")
   parser.add_argument("--gpu", type=int, default=0,
                       help="CUDA device index used by the training scripts.")
+  parser.add_argument("--allow-cpu", action="store_true",
+                      help="Allow training scripts to run on CPU if CUDA is unavailable.")
   parser.add_argument("--python", default=sys.executable,
                       help="Python executable used to launch subprocesses.")
   parser.add_argument("--num-trials", type=int, default=32,
@@ -277,7 +279,7 @@ def maybe_generate_data(args, data_dir, project_root, command_log):
 
 def self_supervised_command(args, project_root, data_dir, models_dir, checkpoints_dir,
                             results_dir, logs_dir, dataset, aggregator, prefix):
-  return [
+  cmd = [
     args.python,
     project_root / "train_self_supervised.py",
     "--data",
@@ -312,6 +314,9 @@ def self_supervised_command(args, project_root, data_dir, models_dir, checkpoint
     "--log-dir",
     logs_dir,
   ]
+  if not args.allow_cpu:
+    cmd.append("--require-gpu")
+  return cmd
 
 
 def supervised_command(args, project_root, data_dir, models_dir, checkpoints_dir,
@@ -353,6 +358,8 @@ def supervised_command(args, project_root, data_dir, models_dir, checkpoints_dir
   ]
   if not args.no_supervised_validation:
     cmd.append("--use_validation")
+  if not args.allow_cpu:
+    cmd.append("--require-gpu")
   return cmd
 
 

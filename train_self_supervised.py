@@ -34,6 +34,8 @@ parser.add_argument('--patience', type=int, default=5, help='Patience for early 
 parser.add_argument('--n_runs', type=int, default=1, help='Number of runs')
 parser.add_argument('--drop_out', type=float, default=0.1, help='Dropout probability')
 parser.add_argument('--gpu', type=int, default=0, help='Idx for the gpu to use')
+parser.add_argument('--require-gpu', action='store_true',
+                    help='Fail instead of falling back to CPU when CUDA is unavailable.')
 parser.add_argument('--node_dim', type=int, default=100, help='Dimensions of the node embedding')
 parser.add_argument('--time_dim', type=int, default=100, help='Dimensions of the time embedding')
 parser.add_argument('--backprop_every', type=int, default=1, help='Every how many batches to '
@@ -170,8 +172,21 @@ nn_test_rand_sampler = RandEdgeSampler(new_node_test_data.sources,
                                        seed=3)
 
 # Set device
-device_string = 'cuda:{}'.format(GPU) if torch.cuda.is_available() else 'cpu'
-device = torch.device(device_string)
+if args.require_gpu and not torch.cuda.is_available():
+  raise RuntimeError(
+    "CUDA is not available in this Python process. In Colab, select Runtime > "
+    "Change runtime type > GPU, then verify `torch.cuda.is_available()` is true."
+  )
+if torch.cuda.is_available():
+  device_count = torch.cuda.device_count()
+  if GPU < 0 or GPU >= device_count:
+    raise ValueError(f'Invalid --gpu {GPU}; CUDA device count is {device_count}.')
+  torch.cuda.set_device(GPU)
+  device = torch.device(f'cuda:{GPU}')
+  logger.info(f'Using CUDA device {GPU}: {torch.cuda.get_device_name(GPU)}')
+else:
+  device = torch.device('cpu')
+  logger.warning('CUDA is not available; using CPU.')
 
 # Compute time statistics
 mean_time_shift_src, std_time_shift_src, mean_time_shift_dst, std_time_shift_dst = \
