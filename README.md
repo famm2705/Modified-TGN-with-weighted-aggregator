@@ -68,11 +68,19 @@ python export_results_to_excel.py \
 Use `--model-dir`, `--results-dir`, or `--log-dir` when you need to override one output directory specifically. The same defaults can be overridden with environment variables: `TGN_DATA_DIR`, `TGN_OUTPUT_ROOT`, `TGN_MODEL_DIR`, `TGN_RESULTS_DIR`, `TGN_REPORTS_DIR`, and `TGN_LOG_DIR`.
 
 ### Isolated toy aggregator experiments
-Use the Python runner instead of the old shell command lists for the current isolated datasets. By default it creates a new timestamped experiment folder, generates missing toy data, runs the full `4 datasets x 4 aggregators x 10 runs` self-supervised matrix, then runs the matching supervised jobs from the corresponding encoder checkpoints.
+Use the Python runner instead of the old shell command lists. By default it uses the v3 label-prediction toy suite, creates a new timestamped experiment folder, generates missing toy data, runs the full `4 datasets x 4 aggregators x 10 runs` self-supervised matrix, then runs the matching supervised edge-label jobs from the corresponding encoder checkpoints.
 
 ```{bash}
 python run_isolated_experiments.py
 ```
+
+The default v3 datasets are:
+- `toy_v3_last_event`
+- `toy_v3_persistent_mean`
+- `toy_v3_rare_spike`
+- `toy_v3_ordered_pattern`
+
+V3 supervised training uses `query_mask=1` rows by default. History and filler rows still update TGN memory, but the supervised decoder loss and metrics are computed only on neutral-feature query edges, so the task is label prediction from prior temporal history rather than current-edge feature leakage.
 
 Each experiment writes isolated `models`, `results`, `reports`, and `logs` subfolders. On Colab, when Google Drive is mounted, the default parent is `/content/drive/MyDrive/tgn_experiment_runs`; otherwise it is `outputs/experiment_runs`.
 
@@ -89,6 +97,9 @@ Useful smaller runs:
 ```{bash}
 # Only intended dataset/aggregator pairs
 python run_isolated_experiments.py --pairs-only
+
+# Run the previous v2 toy suite
+python run_isolated_experiments.py --dataset-suite v2
 
 # Regenerate isolated toy datasets before training
 python run_isolated_experiments.py --regenerate-data

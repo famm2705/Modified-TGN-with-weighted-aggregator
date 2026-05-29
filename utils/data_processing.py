@@ -9,12 +9,17 @@ except ModuleNotFoundError:
 
 
 class Data:
-  def __init__(self, sources, destinations, timestamps, edge_idxs, labels):
+  def __init__(self, sources, destinations, timestamps, edge_idxs, labels, query_mask=None):
     self.sources = sources
     self.destinations = destinations
     self.timestamps = timestamps
     self.edge_idxs = edge_idxs
     self.labels = labels
+    self.query_mask = (
+      np.asarray(query_mask, dtype=bool)
+      if query_mask is not None
+      else np.ones(len(sources), dtype=bool)
+    )
     self.n_interactions = len(sources)
     self.unique_nodes = set(sources) | set(destinations)
     self.n_unique_nodes = len(self.unique_nodes)
@@ -44,30 +49,40 @@ def get_data_node_classification(dataset_name, use_validation=False, data_dir=No
   edge_features = np.load(edge_features_path)
   node_features = np.load(node_features_path)
 
-  val_time, test_time = list(np.quantile(graph_df.ts, [0.70, 0.85]))
-
   sources = graph_df.u.values
   destinations = graph_df.i.values
   edge_idxs = graph_df.idx.values
   labels = graph_df.label.values
   timestamps = graph_df.ts.values
+  query_mask = (
+    graph_df["query_mask"].astype(bool).values
+    if "query_mask" in graph_df.columns
+    else np.ones(len(graph_df), dtype=bool)
+  )
 
   random.seed(2020)
 
-  train_mask = timestamps <= val_time if use_validation else timestamps <= test_time
-  test_mask = timestamps > test_time
-  val_mask = np.logical_and(timestamps <= test_time, timestamps > val_time) if use_validation else test_mask
+  if "split" in graph_df.columns:
+    splits = graph_df["split"].astype(str).values
+    train_mask = splits == "train" if use_validation else np.isin(splits, ["train", "val"])
+    val_mask = splits == "val" if use_validation else splits == "test"
+    test_mask = splits == "test"
+  else:
+    val_time, test_time = list(np.quantile(graph_df.ts, [0.70, 0.85]))
+    train_mask = timestamps <= val_time if use_validation else timestamps <= test_time
+    test_mask = timestamps > test_time
+    val_mask = np.logical_and(timestamps <= test_time, timestamps > val_time) if use_validation else test_mask
 
-  full_data = Data(sources, destinations, timestamps, edge_idxs, labels)
+  full_data = Data(sources, destinations, timestamps, edge_idxs, labels, query_mask)
 
   train_data = Data(sources[train_mask], destinations[train_mask], timestamps[train_mask],
-                    edge_idxs[train_mask], labels[train_mask])
+                    edge_idxs[train_mask], labels[train_mask], query_mask[train_mask])
 
   val_data = Data(sources[val_mask], destinations[val_mask], timestamps[val_mask],
-                  edge_idxs[val_mask], labels[val_mask])
+                  edge_idxs[val_mask], labels[val_mask], query_mask[val_mask])
 
   test_data = Data(sources[test_mask], destinations[test_mask], timestamps[test_mask],
-                   edge_idxs[test_mask], labels[test_mask])
+                   edge_idxs[test_mask], labels[test_mask], query_mask[test_mask])
 
   return full_data, node_features, edge_features, train_data, val_data, test_data
 
@@ -83,50 +98,64 @@ def get_data(dataset_name, different_new_nodes_between_val_and_test=False,
   if randomize_features:
     node_features = np.random.rand(node_features.shape[0], node_features.shape[1])
 
-  val_time, test_time = list(np.quantile(graph_df.ts, [0.70, 0.85]))
-
   sources = graph_df.u.values
   destinations = graph_df.i.values
   edge_idxs = graph_df.idx.values
   labels = graph_df.label.values
   timestamps = graph_df.ts.values
+  splits = graph_df["split"].astype(str).values if "split" in graph_df.columns else None
+  query_mask = (
+    graph_df["query_mask"].astype(bool).values
+    if "query_mask" in graph_df.columns
+    else np.ones(len(graph_df), dtype=bool)
+  )
 
-  full_data = Data(sources, destinations, timestamps, edge_idxs, labels)
+  full_data = Data(sources, destinations, timestamps, edge_idxs, labels, query_mask)
 
   random.seed(2020)
 
   node_set = set(sources) | set(destinations)
   n_total_unique_nodes = len(node_set)
 
-  # Compute nodes which appear at test time
-  test_node_set = set(sources[timestamps > val_time]).union(
-    set(destinations[timestamps > val_time]))
-  # Sample nodes which we keep as new nodes (to test inductiveness), so than we have to remove all
-  # their edges from training
-  new_test_node_set = set(random.sample(list(test_node_set), int(0.1 * n_total_unique_nodes)))
+  if splits is not None:
+    train_period_mask = splits == "train"
+    val_mask = splits == "val"
+    test_mask = splits == "test"
+    observed_edges_mask = np.ones(len(graph_df), dtype=bool)
+    new_test_node_set = set()
+  else:
+    val_time, test_time = list(np.quantile(graph_df.ts, [0.70, 0.85]))
+    train_period_mask = timestamps <= val_time
+    val_mask = np.logical_and(timestamps <= test_time, timestamps > val_time)
+    test_mask = timestamps > test_time
+    future_mask = timestamps > val_time
 
-  # Mask saying for each source and destination whether they are new test nodes
-  new_test_source_mask = graph_df.u.map(lambda x: x in new_test_node_set).values
-  new_test_destination_mask = graph_df.i.map(lambda x: x in new_test_node_set).values
+    # Compute nodes which appear after the training period.
+    test_node_set = set(sources[future_mask]).union(set(destinations[future_mask]))
+    sample_size = min(len(test_node_set), int(0.1 * n_total_unique_nodes))
+    # Sample nodes which we keep as new nodes (to test inductiveness), so than we have to remove all
+    # their edges from training
+    new_test_node_set = set(random.sample(list(test_node_set), sample_size))
 
-  # Mask which is true for edges with both destination and source not being new test nodes (because
-  # we want to remove all edges involving any new test node)
-  observed_edges_mask = np.logical_and(~new_test_source_mask, ~new_test_destination_mask)
+    # Mask saying for each source and destination whether they are new test nodes
+    new_test_source_mask = graph_df.u.map(lambda x: x in new_test_node_set).values
+    new_test_destination_mask = graph_df.i.map(lambda x: x in new_test_node_set).values
 
-  # For train we keep edges happening before the validation time which do not involve any new node
+    # Mask which is true for edges with both destination and source not being new test nodes (because
+    # we want to remove all edges involving any new test node)
+    observed_edges_mask = np.logical_and(~new_test_source_mask, ~new_test_destination_mask)
+
+  # For train we keep edges happening in the training period which do not involve any new node
   # used for inductiveness
-  train_mask = np.logical_and(timestamps <= val_time, observed_edges_mask)
+  train_mask = np.logical_and(train_period_mask, observed_edges_mask)
 
   train_data = Data(sources[train_mask], destinations[train_mask], timestamps[train_mask],
-                    edge_idxs[train_mask], labels[train_mask])
+                    edge_idxs[train_mask], labels[train_mask], query_mask[train_mask])
 
   # define the new nodes sets for testing inductiveness of the model
   train_node_set = set(train_data.sources).union(train_data.destinations)
   assert len(train_node_set & new_test_node_set) == 0
   new_node_set = node_set - train_node_set
-
-  val_mask = np.logical_and(timestamps <= test_time, timestamps > val_time)
-  test_mask = timestamps > test_time
 
   if different_new_nodes_between_val_and_test:
     n_new_nodes = len(new_test_node_set) // 2
@@ -149,19 +178,20 @@ def get_data(dataset_name, different_new_nodes_between_val_and_test=False,
 
   # validation and test with all edges
   val_data = Data(sources[val_mask], destinations[val_mask], timestamps[val_mask],
-                  edge_idxs[val_mask], labels[val_mask])
+                  edge_idxs[val_mask], labels[val_mask], query_mask[val_mask])
 
   test_data = Data(sources[test_mask], destinations[test_mask], timestamps[test_mask],
-                   edge_idxs[test_mask], labels[test_mask])
+                   edge_idxs[test_mask], labels[test_mask], query_mask[test_mask])
 
   # validation and test with edges that at least has one new node (not in training set)
   new_node_val_data = Data(sources[new_node_val_mask], destinations[new_node_val_mask],
                            timestamps[new_node_val_mask],
-                           edge_idxs[new_node_val_mask], labels[new_node_val_mask])
+                           edge_idxs[new_node_val_mask], labels[new_node_val_mask],
+                           query_mask[new_node_val_mask])
 
   new_node_test_data = Data(sources[new_node_test_mask], destinations[new_node_test_mask],
                             timestamps[new_node_test_mask], edge_idxs[new_node_test_mask],
-                            labels[new_node_test_mask])
+                            labels[new_node_test_mask], query_mask[new_node_test_mask])
 
   print("The dataset has {} interactions, involving {} different nodes".format(full_data.n_interactions,
                                                                       full_data.n_unique_nodes))

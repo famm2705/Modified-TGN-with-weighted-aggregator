@@ -11,21 +11,54 @@ from pathlib import Path
 from utils.paths import get_data_dir, get_project_root
 
 
-DATASETS = [
+V2_DATASETS = [
   "toy_last_event",
   "toy_persistent_mean",
   "toy_rare_spike",
   "toy_ordered_pattern",
 ]
 
+V3_DATASETS = [
+  "toy_v3_last_event",
+  "toy_v3_persistent_mean",
+  "toy_v3_rare_spike",
+  "toy_v3_ordered_pattern",
+]
+
 AGGREGATORS = ["last", "mean", "weightedmean", "attention"]
 
-INTENDED_PAIRS = [
+V2_INTENDED_PAIRS = [
   ("toy_last_event", "last"),
   ("toy_persistent_mean", "mean"),
   ("toy_rare_spike", "weightedmean"),
   ("toy_ordered_pattern", "attention"),
 ]
+
+V3_INTENDED_PAIRS = [
+  ("toy_v3_last_event", "last"),
+  ("toy_v3_persistent_mean", "mean"),
+  ("toy_v3_rare_spike", "weightedmean"),
+  ("toy_v3_ordered_pattern", "attention"),
+]
+
+DATASET_SUITES = {
+  "v2": {
+    "datasets": V2_DATASETS,
+    "intended_pairs": V2_INTENDED_PAIRS,
+    "generator": "toydatasets_generator.py",
+    "num_trials": 32,
+    "query_only_labels": False,
+  },
+  "v3": {
+    "datasets": V3_DATASETS,
+    "intended_pairs": V3_INTENDED_PAIRS,
+    "generator": "toydatasets_v3_generator.py",
+    "num_trials": 80,
+    "query_only_labels": True,
+  },
+}
+
+DEFAULT_DATASET_SUITE = "v3"
 
 
 def default_output_base():
@@ -46,11 +79,14 @@ def is_colab_runtime():
 def parse_args():
   parser = argparse.ArgumentParser(
     description=(
-      "Run the current isolated TGN aggregator experiments. The default is the full "
+      "Run isolated TGN aggregator experiments. The default is the v3 full "
       "4 dataset x 4 aggregator x 10 run matrix for self-supervised encoders, then "
       "the matching supervised edge-label runs."
     )
   )
+  parser.add_argument("--dataset-suite", choices=sorted(DATASET_SUITES),
+                      default=DEFAULT_DATASET_SUITE,
+                      help="Toy dataset suite to generate and run.")
   parser.add_argument("--experiment-name", default=None,
                       help="Folder name for this experiment. Defaults to a timestamped name.")
   parser.add_argument("--output-base", default=None,
@@ -74,8 +110,8 @@ def parse_args():
                       ))
   parser.add_argument("--data-dir", default=None,
                       help="Directory containing or receiving preprocessed dataset files.")
-  parser.add_argument("--datasets", nargs="*", default=DATASETS,
-                      help="Datasets to run. Defaults to the current isolated toy datasets.")
+  parser.add_argument("--datasets", nargs="*", default=None,
+                      help="Datasets to run. Defaults to all datasets in --dataset-suite.")
   parser.add_argument("--aggregators", nargs="*", default=AGGREGATORS,
                       help="Aggregators to run.")
   parser.add_argument("--pairs-only", action="store_true",
@@ -98,7 +134,7 @@ def parse_args():
                       help="Allow training scripts to run on CPU if CUDA is unavailable.")
   parser.add_argument("--python", default=sys.executable,
                       help="Python executable used to launch subprocesses.")
-  parser.add_argument("--num-trials", type=int, default=32,
+  parser.add_argument("--num-trials", type=int, default=None,
                       help="Number of two-batch trials when generating isolated datasets.")
   parser.add_argument("--skip-data-generation", action="store_true",
                       help="Do not generate missing isolated datasets.")
@@ -112,6 +148,11 @@ def parse_args():
                       help="Skip Excel/CSV report generation.")
   parser.add_argument("--no-supervised-validation", action="store_true",
                       help="Do not reserve validation data for supervised early stopping.")
+  parser.add_argument("--query-only-labels", dest="query_only_labels", action="store_true",
+                      default=None,
+                      help="Train/evaluate supervised decoder only on query_mask=1 rows.")
+  parser.add_argument("--all-edge-labels", dest="query_only_labels", action="store_false",
+                      help="Train/evaluate supervised decoder on all edge labels.")
   parser.add_argument("--no-resume", dest="resume", action="store_false",
                       help="Rerun completed files instead of skipping them.")
   parser.add_argument("--dry-run", action="store_true",
@@ -122,13 +163,25 @@ def parse_args():
   return parser.parse_args()
 
 
+def apply_suite_defaults(args):
+  suite = DATASET_SUITES[args.dataset_suite]
+  if args.datasets is None:
+    args.datasets = list(suite["datasets"])
+  if args.num_trials is None:
+    args.num_trials = suite["num_trials"]
+  if args.query_only_labels is None:
+    args.query_only_labels = suite["query_only_labels"]
+  return args
+
+
 def experiment_pairs(args):
+  suite = DATASET_SUITES[args.dataset_suite]
   if args.pairs_only:
     selected_datasets = set(args.datasets)
     selected_aggregators = set(args.aggregators)
     return [
       (dataset, aggregator)
-      for dataset, aggregator in INTENDED_PAIRS
+      for dataset, aggregator in suite["intended_pairs"]
       if dataset in selected_datasets and aggregator in selected_aggregators
     ]
 
@@ -213,6 +266,7 @@ def write_manifest(path, args, exp_root, data_dir, models_dir, checkpoints_dir,
   manifest = {
     "created_at": datetime.now().isoformat(timespec="seconds"),
     "experiment_root": str(exp_root),
+    "dataset_suite": args.dataset_suite,
     "data_dir": str(data_dir),
     "models_dir": str(models_dir),
     "checkpoints_dir": str(checkpoints_dir),
@@ -231,6 +285,7 @@ def write_manifest(path, args, exp_root, data_dir, models_dir, checkpoints_dir,
     "use_memory": True,
     "learnable": True,
     "add_cls_token": True,
+    "supervised_label_filter": "query_only" if args.query_only_labels else "all_edges",
     "phase_order": ["self_supervised", "supervised", "reports"],
   }
   path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
@@ -250,10 +305,11 @@ def maybe_generate_data(args, data_dir, project_root, command_log):
     )
 
   data_dir.mkdir(parents=True, exist_ok=True)
+  generator = DATASET_SUITES[args.dataset_suite]["generator"]
   generated = run_command(
     [
       args.python,
-      project_root / "utils" / "toydatasets_generator.py",
+      project_root / "utils" / generator,
       "--output-dir",
       data_dir,
       "--num-trials",
@@ -358,6 +414,8 @@ def supervised_command(args, project_root, data_dir, models_dir, checkpoints_dir
   ]
   if not args.no_supervised_validation:
     cmd.append("--use_validation")
+  if args.query_only_labels:
+    cmd.append("--query-only-labels")
   if not args.allow_cpu:
     cmd.append("--require-gpu")
   return cmd
@@ -508,7 +566,7 @@ def generate_reports(args, project_root, results_dir, reports_dir, command_log):
 
 
 def main():
-  args = parse_args()
+  args = apply_suite_defaults(parse_args())
   if args.n_runs < 1:
     raise ValueError("--n-runs must be at least 1.")
   if args.batch_size < 1:
@@ -564,6 +622,8 @@ def main():
 
   print(f"Experiment folder: {exp_root}")
   print(f"Per-epoch checkpoints: {checkpoints_dir}")
+  print(f"Dataset suite: {args.dataset_suite}")
+  print(f"Supervised label filter: {'query_mask=1 rows' if args.query_only_labels else 'all rows'}")
   print(f"Pairs: {len(pairs)}")
   print(f"Runs per pair: {args.n_runs}")
   print(f"Self-supervised runs planned: {0 if args.skip_self_supervised else len(pairs) * args.n_runs}")

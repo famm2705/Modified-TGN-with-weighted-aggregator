@@ -65,6 +65,16 @@ def eval_edge_prediction(model, negative_edge_sampler, data, n_neighbors, batch_
 def binary_classification_metrics(labels, pred_prob):
   labels = np.asarray(labels).astype(int)
   pred_prob = np.asarray(pred_prob)
+  if len(labels) == 0:
+    return {
+      "ap": np.nan,
+      "auc": np.nan,
+      "acc": np.nan,
+      "precision": np.nan,
+      "recall": np.nan,
+      "f1": np.nan,
+      "n_eval": 0,
+    }
   pred_label = (pred_prob >= 0.5).astype(int)
   has_both_classes = len(np.unique(labels)) > 1
 
@@ -75,11 +85,13 @@ def binary_classification_metrics(labels, pred_prob):
     "precision": precision_score(labels, pred_label, zero_division=0),
     "recall": recall_score(labels, pred_label, zero_division=0),
     "f1": f1_score(labels, pred_label, zero_division=0),
+    "n_eval": len(labels),
   }
 
 
-def eval_edge_label_prediction(tgn, decoder, data, batch_size, n_neighbors):
-  pred_prob = np.zeros(len(data.sources))
+def eval_edge_label_prediction(tgn, decoder, data, batch_size, n_neighbors, query_only=False):
+  pred_probs = []
+  labels = []
   num_instance = len(data.sources)
   num_batch = math.ceil(num_instance / batch_size)
 
@@ -94,6 +106,8 @@ def eval_edge_label_prediction(tgn, decoder, data, batch_size, n_neighbors):
       destinations_batch = data.destinations[s_idx: e_idx]
       timestamps_batch = data.timestamps[s_idx: e_idx]
       edge_idxs_batch = data.edge_idxs[s_idx: e_idx]
+      labels_batch = data.labels[s_idx: e_idx]
+      query_mask_batch = data.query_mask[s_idx: e_idx] if query_only else np.ones(e_idx - s_idx, dtype=bool)
 
       source_embedding, destination_embedding, _ = tgn.compute_temporal_embeddings(sources_batch,
                                                                                    destinations_batch,
@@ -105,9 +119,13 @@ def eval_edge_label_prediction(tgn, decoder, data, batch_size, n_neighbors):
       decoder_input = torch.cat([source_embedding, destination_embedding, edge_features_batch],
                                 dim=1)
       pred_prob_batch = decoder(decoder_input).sigmoid()
-      pred_prob[s_idx: e_idx] = pred_prob_batch.view(-1).cpu().numpy()
+      if np.any(query_mask_batch):
+        pred_probs.append(pred_prob_batch.view(-1).cpu().numpy()[query_mask_batch])
+        labels.append(labels_batch[query_mask_batch])
 
-  return binary_classification_metrics(data.labels, pred_prob)
+  if not pred_probs:
+    return binary_classification_metrics([], [])
+  return binary_classification_metrics(np.concatenate(labels), np.concatenate(pred_probs))
 
 
 def eval_node_classification(tgn, decoder, data, edge_idxs, batch_size, n_neighbors):

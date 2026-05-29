@@ -21,6 +21,10 @@ DEFAULT_CONFIDENCE = 0.95
 DEFAULT_EXPECTED_RUNS = 10
 
 DEFAULT_DATASETS = [
+    "toy_v3_last_event",
+    "toy_v3_persistent_mean",
+    "toy_v3_rare_spike",
+    "toy_v3_ordered_pattern",
     "toy_last_event",
     "toy_persistent_mean",
     "toy_rare_spike",

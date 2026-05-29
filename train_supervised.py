@@ -67,6 +67,8 @@ parser.add_argument('--use_source_embedding_in_message', action='store_true',
 parser.add_argument('--n_neg', type=int, default=1)
 parser.add_argument('--use_validation', action='store_true',
                     help='Whether to use a validation set')
+parser.add_argument('--query-only-labels', action='store_true',
+                    help='Train and evaluate edge-label decoder only on rows with query_mask=1.')
 parser.add_argument('--new_node', action='store_true', help='model new node')
 parser.add_argument('--learnable', action="store_true",
                     help="Whether Message Aggregator is learnable module")
@@ -264,6 +266,7 @@ for i in range(args.n_runs):
     tgn = tgn.eval()
     decoder = decoder.train()
     loss = 0
+    supervised_batches = 0
     
     for k in range(num_batch):
       s_idx = k * BATCH_SIZE
@@ -274,6 +277,11 @@ for i in range(args.n_runs):
       timestamps_batch = train_data.timestamps[s_idx: e_idx]
       edge_idxs_batch = train_data.edge_idxs[s_idx: e_idx]
       labels_batch = train_data.labels[s_idx: e_idx]
+      query_mask_batch = (
+        train_data.query_mask[s_idx: e_idx]
+        if args.query_only_labels
+        else np.ones(e_idx - s_idx, dtype=bool)
+      )
 
       decoder_optimizer.zero_grad()
       with torch.no_grad():
@@ -288,18 +296,33 @@ for i in range(args.n_runs):
       edge_features_batch = tgn.edge_raw_features[edge_idxs_batch]
       decoder_input = torch.cat([source_embedding, destination_embedding, edge_features_batch],
                                 dim=1)
+      if args.query_only_labels:
+        query_mask_torch = torch.from_numpy(query_mask_batch).bool().to(device)
+        if not torch.any(query_mask_torch):
+          continue
+        decoder_input = decoder_input[query_mask_torch]
+        labels_batch_torch = labels_batch_torch[query_mask_torch]
+
       logits = decoder(decoder_input)
       decoder_loss = decoder_loss_criterion(logits, labels_batch_torch)
       decoder_loss.backward()
       decoder_optimizer.step()
       loss += decoder_loss.item()
-    train_losses.append(loss / num_batch)
+      supervised_batches += 1
+    if supervised_batches == 0:
+      raise RuntimeError(
+        "No supervised labels were available for this epoch. "
+        "If this is not a query-mask dataset, remove --query-only-labels."
+      )
+    mean_train_loss = loss / supervised_batches
+    train_losses.append(mean_train_loss)
     epoch_time = time.time() - start_epoch
     epoch_times.append(epoch_time)
 
     tgn.set_neighbor_finder(full_ngh_finder)
     val_metrics = eval_edge_label_prediction(tgn, decoder, val_data, BATCH_SIZE,
-                                             n_neighbors=NUM_NEIGHBORS)
+                                             n_neighbors=NUM_NEIGHBORS,
+                                             query_only=args.query_only_labels)
     val_auc = val_metrics["auc"]
     val_ap = val_metrics["ap"]
     val_aucs.append(val_auc)
@@ -325,11 +348,13 @@ for i in range(args.n_runs):
       "source_encoder_model": str(ENCODER_MODEL_PATH),
       "decoder_model": str(DECODER_MODEL_SAVE_PATH),
       "prediction_task": "edge_label_classification",
+      "label_filter": "query_only" if args.query_only_labels else "all_edges",
+      "val_n_eval": val_metrics.get("n_eval", 0),
       "edge_decoder_input_dim": EDGE_DECODER_INPUT_DIM,
     }, open(results_path, "wb"))
 
     logger.info(
-      f'Epoch {epoch}: train loss: {loss / num_batch}, val auc: {val_auc}, '
+      f'Epoch {epoch}: train loss: {mean_train_loss}, val auc: {val_auc}, '
       f'val ap: {val_ap}, val f1: {val_metrics["f1"]}, time: {total_epoch_time}')
 
     with open(csv_path, "a", newline="") as f:
@@ -337,7 +362,7 @@ for i in range(args.n_runs):
       writer.writerow([
         i,
         epoch,
-        loss / num_batch,
+        mean_train_loss,
         val_auc,
         val_ap,
         val_metrics["acc"],
@@ -368,7 +393,8 @@ for i in range(args.n_runs):
 
     tgn.set_neighbor_finder(full_ngh_finder)
     test_metrics = eval_edge_label_prediction(tgn, decoder, test_data, BATCH_SIZE,
-                                              n_neighbors=NUM_NEIGHBORS)
+                                              n_neighbors=NUM_NEIGHBORS,
+                                              query_only=args.query_only_labels)
   else:
     # If we are not using a validation set, the test performance is just the performance computed
     # in the last epoch
@@ -379,6 +405,7 @@ for i in range(args.n_runs):
       "precision": val_precs[-1],
       "recall": val_recs[-1],
       "f1": val_f1s[-1],
+      "n_eval": val_metrics.get("n_eval", 0),
     }
     
   pickle.dump({
@@ -402,6 +429,8 @@ for i in range(args.n_runs):
     "source_encoder_model": str(ENCODER_MODEL_PATH),
     "decoder_model": str(DECODER_MODEL_SAVE_PATH),
     "prediction_task": "edge_label_classification",
+    "label_filter": "query_only" if args.query_only_labels else "all_edges",
+    "test_n_eval": test_metrics.get("n_eval", 0),
     "edge_decoder_input_dim": EDGE_DECODER_INPUT_DIM,
   }, open(results_path, "wb"))
 

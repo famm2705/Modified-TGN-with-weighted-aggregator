@@ -24,6 +24,10 @@ from export_results_to_excel import (
 
 DEFAULT_OUTPUT_NAME = "tgn_supervised_report.xlsx"
 DEFAULT_DATASETS = [
+    "toy_v3_last_event",
+    "toy_v3_persistent_mean",
+    "toy_v3_rare_spike",
+    "toy_v3_ordered_pattern",
     "toy_last_event",
     "toy_persistent_mean",
     "toy_rare_spike",
@@ -158,6 +162,9 @@ def load_supervised_run_file(path):
         "total_train_time": float(np.sum(total_epoch_times)) if len(total_epoch_times) else np.nan,
         "num_epochs_recorded": len(total_epoch_times),
         "edge_decoder_input_dim": data.get("edge_decoder_input_dim", np.nan),
+        "label_filter": data.get("label_filter", "all_edges"),
+        "test_n_eval": data.get("test_n_eval", np.nan),
+        "val_n_eval": data.get("val_n_eval", np.nan),
         "source_encoder_model": data.get("source_encoder_model", ""),
         "decoder_model": data.get("decoder_model", ""),
         "source_file": path.name,
@@ -278,7 +285,8 @@ def write_outputs(raw_df, summary_long, summary_wide, completion, plot_tables, o
                 "field": "metric_note",
                 "value": (
                     "Current train_supervised.py predicts edge labels from source embedding, "
-                    "destination embedding, and edge features."
+                    "destination embedding, and edge features. V3 toy runs use query_mask=1 "
+                    "rows by default."
                 ),
             },
         ])
