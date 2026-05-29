@@ -17,9 +17,13 @@ from utils.data_processing import compute_time_statistics, get_data_node_classif
 from evaluation.evaluation import eval_edge_label_prediction
 from utils.paths import get_checkpoints_dir, get_data_dir, get_logs_dir, get_models_dir, get_project_root, get_results_dir
 
-random.seed(0)
-np.random.seed(0)
-torch.manual_seed(0)
+
+def set_random_seed(seed):
+  random.seed(seed)
+  np.random.seed(seed)
+  torch.manual_seed(seed)
+  if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(seed)
 
 ### Argument and global variables
 parser = argparse.ArgumentParser('TGN supervised edge-label training')
@@ -36,6 +40,8 @@ parser.add_argument('--patience', type=int, default=5, help='Patience for early 
 parser.add_argument('--n_runs', type=int, default=1, help='Number of runs')
 parser.add_argument('--drop_out', type=float, default=0.1, help='Dropout probability')
 parser.add_argument('--gpu', type=int, default=0, help='Idx for the gpu to use')
+parser.add_argument('--seed', type=int, default=0,
+                    help='Base random seed. Internal runs use seed + run_index.')
 parser.add_argument('--require-gpu', action='store_true',
                     help='Fail instead of falling back to CPU when CUDA is unavailable.')
 parser.add_argument('--node_dim', type=int, default=100, help='Dimensions of the node embedding')
@@ -69,6 +75,11 @@ parser.add_argument('--use_validation', action='store_true',
                     help='Whether to use a validation set')
 parser.add_argument('--query-only-labels', action='store_true',
                     help='Train and evaluate edge-label decoder only on rows with query_mask=1.')
+parser.add_argument('--shuffle-train-labels', action='store_true',
+                    help='Leakage-control mode: shuffle supervised training labels, preserving eval labels.')
+parser.add_argument('--decoder-input-control', default="full",
+                    choices=["full", "query_features_only"],
+                    help='Leakage-control mode for decoder inputs.')
 parser.add_argument('--new_node', action='store_true', help='model new node')
 parser.add_argument('--learnable', action="store_true",
                     help="Whether Message Aggregator is learnable module")
@@ -94,6 +105,8 @@ try:
 except:
   parser.print_help()
   sys.exit(0)
+
+set_random_seed(args.seed)
 
 BATCH_SIZE = args.bs
 NUM_NEIGHBORS = args.n_degree
@@ -138,6 +151,40 @@ def cleanup_epoch_checkpoints():
   pattern = f'supervised_{args.prefix}_{args.data}_{args.aggregator}_edge_label_decoder_[0-9]*.pth'
   for path in CHECKPOINT_BASE_PATH.glob(pattern):
     path.unlink(missing_ok=True)
+
+
+def replay_temporal_data(tgn, data, batch_size, n_neighbors):
+  num_instance = len(data.sources)
+  num_batch = math.ceil(num_instance / batch_size)
+
+  with torch.no_grad():
+    tgn.eval()
+    for k in range(num_batch):
+      s_idx = k * batch_size
+      e_idx = min(num_instance, s_idx + batch_size)
+      sources_batch = data.sources[s_idx: e_idx]
+      destinations_batch = data.destinations[s_idx: e_idx]
+      timestamps_batch = data.timestamps[s_idx: e_idx]
+      edge_idxs_batch = data.edge_idxs[s_idx: e_idx]
+      tgn.compute_temporal_embeddings(sources_batch,
+                                      destinations_batch,
+                                      destinations_batch,
+                                      timestamps_batch,
+                                      edge_idxs_batch,
+                                      n_neighbors)
+
+
+def build_train_labels(labels, query_mask, query_only, shuffle_labels, seed):
+  train_labels = labels.copy()
+  if not shuffle_labels:
+    return train_labels
+
+  selected = query_mask if query_only else np.ones(len(labels), dtype=bool)
+  shuffled = train_labels[selected].copy()
+  rng = np.random.default_rng(seed)
+  rng.shuffle(shuffled)
+  train_labels[selected] = shuffled
+  return train_labels
 
 ### set up logger
 logging.basicConfig(level=logging.INFO)
@@ -187,6 +234,17 @@ mean_time_shift_src, std_time_shift_src, mean_time_shift_dst, std_time_shift_dst
   compute_time_statistics(full_data.sources, full_data.destinations, full_data.timestamps)
 
 for i in range(args.n_runs):
+  run_seed = args.seed + i
+  set_random_seed(run_seed)
+  train_labels = build_train_labels(
+    train_data.labels,
+    train_data.query_mask,
+    args.query_only_labels,
+    args.shuffle_train_labels,
+    run_seed + 1000003,
+  )
+  label_control = "shuffle_train_labels" if args.shuffle_train_labels else "none"
+
   results_path = (
     RESULTS_PATH / f"supervised_{args.prefix}_{args.data}_{args.aggregator}_edge_label_classification_{i}.pkl"
     if i > 0
@@ -199,6 +257,8 @@ for i in range(args.n_runs):
       writer = csv.writer(f)
       writer.writerow([
         "run",
+        "seed",
+        "label_control",
         "epoch",
         "train_loss",
         "val_auc",
@@ -276,7 +336,7 @@ for i in range(args.n_runs):
       destinations_batch = train_data.destinations[s_idx: e_idx]
       timestamps_batch = train_data.timestamps[s_idx: e_idx]
       edge_idxs_batch = train_data.edge_idxs[s_idx: e_idx]
-      labels_batch = train_data.labels[s_idx: e_idx]
+      labels_batch = train_labels[s_idx: e_idx]
       query_mask_batch = (
         train_data.query_mask[s_idx: e_idx]
         if args.query_only_labels
@@ -294,6 +354,10 @@ for i in range(args.n_runs):
 
       labels_batch_torch = torch.from_numpy(labels_batch).float().to(device)
       edge_features_batch = tgn.edge_raw_features[edge_idxs_batch]
+      if args.decoder_input_control == "query_features_only":
+        source_embedding = torch.zeros_like(source_embedding)
+        destination_embedding = torch.zeros_like(destination_embedding)
+
       decoder_input = torch.cat([source_embedding, destination_embedding, edge_features_batch],
                                 dim=1)
       if args.query_only_labels:
@@ -322,7 +386,8 @@ for i in range(args.n_runs):
     tgn.set_neighbor_finder(full_ngh_finder)
     val_metrics = eval_edge_label_prediction(tgn, decoder, val_data, BATCH_SIZE,
                                              n_neighbors=NUM_NEIGHBORS,
-                                             query_only=args.query_only_labels)
+                                             query_only=args.query_only_labels,
+                                             decoder_input_control=args.decoder_input_control)
     val_auc = val_metrics["auc"]
     val_ap = val_metrics["ap"]
     val_aucs.append(val_auc)
@@ -335,6 +400,7 @@ for i in range(args.n_runs):
     total_epoch_times.append(total_epoch_time)
 
     pickle.dump({
+      "seed": run_seed,
       "val_aps": val_aps,
       "val_aucs": val_aucs,
       "val_accs": val_accs,
@@ -349,6 +415,9 @@ for i in range(args.n_runs):
       "decoder_model": str(DECODER_MODEL_SAVE_PATH),
       "prediction_task": "edge_label_classification",
       "label_filter": "query_only" if args.query_only_labels else "all_edges",
+      "label_control": label_control,
+      "decoder_input_control": args.decoder_input_control,
+      "explicit_memory_replay": bool(USE_MEMORY),
       "val_n_eval": val_metrics.get("n_eval", 0),
       "edge_decoder_input_dim": EDGE_DECODER_INPUT_DIM,
     }, open(results_path, "wb"))
@@ -361,6 +430,8 @@ for i in range(args.n_runs):
       writer = csv.writer(f)
       writer.writerow([
         i,
+        run_seed,
+        label_control,
         epoch,
         mean_train_loss,
         val_auc,
@@ -392,9 +463,15 @@ for i in range(args.n_runs):
     decoder.eval()
 
     tgn.set_neighbor_finder(full_ngh_finder)
+    if USE_MEMORY:
+      tgn.memory.__init_memory__()
+      replay_temporal_data(tgn, train_data, BATCH_SIZE, NUM_NEIGHBORS)
+      replay_temporal_data(tgn, val_data, BATCH_SIZE, NUM_NEIGHBORS)
+
     test_metrics = eval_edge_label_prediction(tgn, decoder, test_data, BATCH_SIZE,
                                               n_neighbors=NUM_NEIGHBORS,
-                                              query_only=args.query_only_labels)
+                                              query_only=args.query_only_labels,
+                                              decoder_input_control=args.decoder_input_control)
   else:
     # If we are not using a validation set, the test performance is just the performance computed
     # in the last epoch
@@ -409,6 +486,7 @@ for i in range(args.n_runs):
     }
     
   pickle.dump({
+    "seed": run_seed,
     "val_aps": val_aps,
     "val_aucs": val_aucs,
     "val_accs": val_accs,
@@ -430,6 +508,9 @@ for i in range(args.n_runs):
     "decoder_model": str(DECODER_MODEL_SAVE_PATH),
     "prediction_task": "edge_label_classification",
     "label_filter": "query_only" if args.query_only_labels else "all_edges",
+    "label_control": label_control,
+    "decoder_input_control": args.decoder_input_control,
+    "explicit_memory_replay": bool(USE_MEMORY),
     "test_n_eval": test_metrics.get("n_eval", 0),
     "edge_decoder_input_dim": EDGE_DECODER_INPUT_DIM,
   }, open(results_path, "wb"))

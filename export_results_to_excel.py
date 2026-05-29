@@ -165,6 +165,7 @@ def load_run_file(path):
     total_epoch_times = data.get("total_epoch_times", []) or []
 
     row = {
+        "seed": data.get("seed", np.nan),
         "test_ap": scalar_or_nan(data.get("test_ap")),
         "test_auc": scalar_or_nan(data.get("test_auc")),
         "test_acc": scalar_or_nan(data.get("test_acc")),

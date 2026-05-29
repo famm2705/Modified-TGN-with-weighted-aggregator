@@ -98,8 +98,15 @@ Useful smaller runs:
 # Only intended dataset/aggregator pairs
 python run_isolated_experiments.py --pairs-only
 
+# Quick sanity run with independent seeds run00..run02
+python run_isolated_experiments.py --pairs-only --n-runs 3 --self-epochs 10 --supervised-epochs 10
+
 # Run the previous v2 toy suite
 python run_isolated_experiments.py --dataset-suite v2
+
+# Leakage-control run: supervised decoder sees only neutral query edge features
+python run_isolated_experiments.py --pairs-only --n-runs 3 --self-epochs 10 --supervised-epochs 10 \
+  --supervised-input-control query-features-only --experiment-name v3_query_feature_control
 
 # Regenerate isolated toy datasets before training
 python run_isolated_experiments.py --regenerate-data

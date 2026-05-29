@@ -130,6 +130,8 @@ def parse_args():
                       help="Number of temporal neighbors sampled by TGN.")
   parser.add_argument("--gpu", type=int, default=0,
                       help="CUDA device index used by the training scripts.")
+  parser.add_argument("--seed-base", type=int, default=0,
+                      help="Base seed. run00 uses this value, run01 uses seed-base + 1, etc.")
   parser.add_argument("--allow-cpu", action="store_true",
                       help="Allow training scripts to run on CPU if CUDA is unavailable.")
   parser.add_argument("--python", default=sys.executable,
@@ -153,6 +155,12 @@ def parse_args():
                       help="Train/evaluate supervised decoder only on query_mask=1 rows.")
   parser.add_argument("--all-edge-labels", dest="query_only_labels", action="store_false",
                       help="Train/evaluate supervised decoder on all edge labels.")
+  parser.add_argument("--supervised-label-control", default="none",
+                      choices=["none", "shuffle-train-labels"],
+                      help="Optional supervised leakage-control mode.")
+  parser.add_argument("--supervised-input-control", default="full",
+                      choices=["full", "query-features-only"],
+                      help="Optional supervised decoder-input control.")
   parser.add_argument("--no-resume", dest="resume", action="store_false",
                       help="Rerun completed files instead of skipping them.")
   parser.add_argument("--dry-run", action="store_true",
@@ -255,6 +263,15 @@ def run_prefixes(n_runs):
   return [f"run{run_idx:02d}" for run_idx in range(n_runs)]
 
 
+def seed_for_prefix(args, prefix):
+  if prefix.startswith("run"):
+    try:
+      return args.seed_base + int(prefix[3:])
+    except ValueError:
+      pass
+  return args.seed_base
+
+
 def run_specs(args, pairs):
   for dataset, aggregator in pairs:
     for prefix in run_prefixes(args.n_runs):
@@ -282,10 +299,13 @@ def write_manifest(path, args, exp_root, data_dir, models_dir, checkpoints_dir,
     "patience": args.patience,
     "batch_size": args.batch_size,
     "n_degree": args.n_degree,
+    "seed_base": args.seed_base,
     "use_memory": True,
     "learnable": True,
     "add_cls_token": True,
     "supervised_label_filter": "query_only" if args.query_only_labels else "all_edges",
+    "supervised_label_control": args.supervised_label_control,
+    "supervised_input_control": args.supervised_input_control,
     "phase_order": ["self_supervised", "supervised", "reports"],
   }
   path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
@@ -356,6 +376,8 @@ def self_supervised_command(args, project_root, data_dir, models_dir, checkpoint
     str(args.n_degree),
     "--gpu",
     str(args.gpu),
+    "--seed",
+    str(seed_for_prefix(args, prefix)),
     "--use_memory",
     "--learnable",
     "--add_cls_token",
@@ -398,6 +420,8 @@ def supervised_command(args, project_root, data_dir, models_dir, checkpoints_dir
     str(args.n_degree),
     "--gpu",
     str(args.gpu),
+    "--seed",
+    str(seed_for_prefix(args, prefix)),
     "--use_memory",
     "--learnable",
     "--add_cls_token",
@@ -416,6 +440,10 @@ def supervised_command(args, project_root, data_dir, models_dir, checkpoints_dir
     cmd.append("--use_validation")
   if args.query_only_labels:
     cmd.append("--query-only-labels")
+  if args.supervised_label_control == "shuffle-train-labels":
+    cmd.append("--shuffle-train-labels")
+  if args.supervised_input_control == "query-features-only":
+    cmd.extend(["--decoder-input-control", "query_features_only"])
   if not args.allow_cpu:
     cmd.append("--require-gpu")
   return cmd
@@ -624,6 +652,9 @@ def main():
   print(f"Per-epoch checkpoints: {checkpoints_dir}")
   print(f"Dataset suite: {args.dataset_suite}")
   print(f"Supervised label filter: {'query_mask=1 rows' if args.query_only_labels else 'all rows'}")
+  print(f"Supervised label control: {args.supervised_label_control}")
+  print(f"Supervised input control: {args.supervised_input_control}")
+  print(f"Seed base: {args.seed_base}")
   print(f"Pairs: {len(pairs)}")
   print(f"Runs per pair: {args.n_runs}")
   print(f"Self-supervised runs planned: {0 if args.skip_self_supervised else len(pairs) * args.n_runs}")

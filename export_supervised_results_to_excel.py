@@ -143,6 +143,7 @@ def load_supervised_run_file(path):
     total_epoch_times = data.get("total_epoch_times", []) or []
 
     row = {
+        "seed": data.get("seed", np.nan),
         "prediction_task": data.get("prediction_task", "legacy_node_classification"),
         "test_ap": scalar_or_nan(data.get("test_ap")),
         "test_auc": scalar_or_nan(data.get("test_auc")),
@@ -163,6 +164,9 @@ def load_supervised_run_file(path):
         "num_epochs_recorded": len(total_epoch_times),
         "edge_decoder_input_dim": data.get("edge_decoder_input_dim", np.nan),
         "label_filter": data.get("label_filter", "all_edges"),
+        "label_control": data.get("label_control", "none"),
+        "decoder_input_control": data.get("decoder_input_control", "full"),
+        "explicit_memory_replay": data.get("explicit_memory_replay", False),
         "test_n_eval": data.get("test_n_eval", np.nan),
         "val_n_eval": data.get("val_n_eval", np.nan),
         "source_encoder_model": data.get("source_encoder_model", ""),

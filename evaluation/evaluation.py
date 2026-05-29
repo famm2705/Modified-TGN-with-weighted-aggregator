@@ -89,7 +89,8 @@ def binary_classification_metrics(labels, pred_prob):
   }
 
 
-def eval_edge_label_prediction(tgn, decoder, data, batch_size, n_neighbors, query_only=False):
+def eval_edge_label_prediction(tgn, decoder, data, batch_size, n_neighbors, query_only=False,
+                               decoder_input_control="full"):
   pred_probs = []
   labels = []
   num_instance = len(data.sources)
@@ -115,6 +116,10 @@ def eval_edge_label_prediction(tgn, decoder, data, batch_size, n_neighbors, quer
                                                                                    timestamps_batch,
                                                                                    edge_idxs_batch,
                                                                                    n_neighbors)
+      if decoder_input_control == "query_features_only":
+        source_embedding = torch.zeros_like(source_embedding)
+        destination_embedding = torch.zeros_like(destination_embedding)
+
       edge_features_batch = tgn.edge_raw_features[edge_idxs_batch]
       decoder_input = torch.cat([source_embedding, destination_embedding, edge_features_batch],
                                 dim=1)

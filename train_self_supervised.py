@@ -3,6 +3,7 @@ import logging
 import time
 import sys
 import argparse
+import random
 import torch
 import numpy as np
 import pickle
@@ -16,8 +17,13 @@ from utils.utils import EarlyStopMonitor, RandEdgeSampler, get_neighbor_finder
 from utils.data_processing import get_data, compute_time_statistics
 from utils.paths import get_checkpoints_dir, get_data_dir, get_logs_dir, get_models_dir, get_project_root, get_results_dir
 
-torch.manual_seed(0)
-np.random.seed(0)
+
+def set_random_seed(seed):
+  random.seed(seed)
+  np.random.seed(seed)
+  torch.manual_seed(seed)
+  if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(seed)
 
 ### Argument and global variables
 parser = argparse.ArgumentParser('TGN self-supervised training')
@@ -34,6 +40,8 @@ parser.add_argument('--patience', type=int, default=5, help='Patience for early 
 parser.add_argument('--n_runs', type=int, default=1, help='Number of runs')
 parser.add_argument('--drop_out', type=float, default=0.1, help='Dropout probability')
 parser.add_argument('--gpu', type=int, default=0, help='Idx for the gpu to use')
+parser.add_argument('--seed', type=int, default=0,
+                    help='Base random seed. Internal runs use seed + run_index.')
 parser.add_argument('--require-gpu', action='store_true',
                     help='Fail instead of falling back to CPU when CUDA is unavailable.')
 parser.add_argument('--node_dim', type=int, default=100, help='Dimensions of the node embedding')
@@ -91,6 +99,8 @@ try:
 except:
   parser.print_help()
   sys.exit(0)
+
+set_random_seed(args.seed)
 
 BATCH_SIZE = args.bs
 NUM_NEIGHBORS = args.n_degree
@@ -193,12 +203,16 @@ mean_time_shift_src, std_time_shift_src, mean_time_shift_dst, std_time_shift_dst
   compute_time_statistics(full_data.sources, full_data.destinations, full_data.timestamps)
 
 for i in range(args.n_runs):
+  run_seed = args.seed + i
+  set_random_seed(run_seed)
+
   csv_path = RESULTS_DIR / f"{args.prefix}_{args.data}_{args.aggregator}_metrics.csv"
 
   if not Path(csv_path).exists():
       with open(csv_path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow([
+          "seed",
           "epoch",
           "train_loss",
           "val_auc",
@@ -362,6 +376,7 @@ model=tgn,
 
 
     pickle.dump({
+      "seed": run_seed,
       "val_aps": val_aps,
      "val_aucs": val_aucs,
      "new_nodes_val_aps": new_nodes_val_aps,
@@ -384,6 +399,7 @@ model=tgn,
     with open(csv_path, "a", newline="") as f:
       writer = csv.writer(f)
       writer.writerow([
+        run_seed,
         epoch,
         np.mean(m_loss),
         val_auc,
@@ -440,6 +456,7 @@ model=tgn,
   # Save results for this run
 
   pickle.dump({
+    "seed": run_seed,
     "val_aps": val_aps,
     "val_aucs": val_aucs,
     "new_nodes_val_aps": new_nodes_val_aps,
