@@ -80,7 +80,7 @@ The default v3 datasets are:
 - `toy_v3_rare_spike`
 - `toy_v3_ordered_pattern`
 
-V3 supervised training uses `query_mask=1` rows by default. History and filler rows still update TGN memory, but the supervised decoder loss and metrics are computed only on neutral-feature query edges, so the task is label prediction from prior temporal history rather than current-edge feature leakage.
+V3 runs use `--embedding_module identity` by default so the supervised decoder sees the memory state produced by the message aggregator, without graph-attention neighbor lookup acting as a second aggregation path. V3 supervised training also uses `query_mask=1` rows by default. History and filler rows still update TGN memory, but the supervised decoder loss and metrics are computed only on neutral-feature query edges, so the task is label prediction from prior temporal history rather than current-edge feature leakage.
 
 Each experiment writes isolated `models`, `results`, `reports`, and `logs` subfolders. On Colab, when Google Drive is mounted, the default parent is `/content/drive/MyDrive/tgn_experiment_runs`; otherwise it is `outputs/experiment_runs`.
 

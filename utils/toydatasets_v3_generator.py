@@ -19,7 +19,7 @@ except ModuleNotFoundError:
 # Query edge features are neutral for both classes. The label is recoverable only
 # from the source node history compressed into TGN memory by the message aggregator.
 
-NUM_NODES = 160
+NUM_NODES = 256
 NUM_SERVERS = 16
 FEATURE_DIM = 6
 NODE_FEATURE_DIM = 172
@@ -31,24 +31,24 @@ DEFAULT_TRIALS = 80
 
 SERVERS = np.arange(NUM_SERVERS)
 QUERY_SERVER = int(SERVERS[0])
-TRIAL_DEVICES = np.arange(NUM_SERVERS, NUM_SERVERS + 16)
-FILLER_DEVICES = np.arange(NUM_SERVERS + 32, NUM_NODES)
+TRIAL_DEVICES = np.arange(NUM_SERVERS, NUM_SERVERS + 128)
+FILLER_DEVICES = np.arange(NUM_SERVERS + 128, NUM_NODES)
 
 NEUTRAL = np.zeros(FEATURE_DIM)
 
-LAST_POS = np.array([1.2, -1.1, 1.0, -0.9, 0.8, -0.7])
+LAST_POS = np.array([2.2, -2.1, 2.0, -1.9, 1.8, -1.7])
 LAST_NEG = -LAST_POS
 
-MEAN_POS = np.array([0.42, 0.30, 0.22, -0.30, 0.22, -0.18])
+MEAN_POS = np.array([0.95, 0.72, 0.56, -0.72, 0.48, -0.44])
 MEAN_NEG = -MEAN_POS
-MEAN_DISTRACTOR = np.array([0.0, 0.0, 3.0, -3.0, 0.0, 0.0])
+MEAN_DISTRACTOR = np.array([0.0, 0.0, 2.2, -2.2, 0.0, 0.0])
 
 SPIKE_POS = np.array([5.2, -5.0, 4.6, -4.4, 4.2, -4.0])
 SPIKE_NEG = -SPIKE_POS
 
-ORDER_A = np.array([2.0, 0.0, 0.0, -1.0, 0.5, 0.0])
-ORDER_B = np.array([0.0, 2.4, 0.0, 0.0, -1.0, 0.5])
-ORDER_C = np.array([0.0, 0.0, 2.8, 0.5, 0.0, -1.8])
+ORDER_A = np.array([3.4, 0.0, 0.0, -1.7, 0.8, 0.0])
+ORDER_B = np.array([0.0, 3.7, 0.0, 0.0, -1.7, 0.8])
+ORDER_C = np.array([0.0, 0.0, 3.9, 0.8, 0.0, -2.4])
 
 DATASET_CONFIGS = [
     ("toy_v3_last_event", "last_event", 10101),
@@ -78,10 +78,12 @@ def trial_split(trial_idx, num_trials):
     return "test", trial_idx - val_end
 
 
-def trial_source_and_label(local_idx):
-    source = int(TRIAL_DEVICES[local_idx % len(TRIAL_DEVICES)])
-    cycle = local_idx // len(TRIAL_DEVICES)
-    label = int(((local_idx // 2) + cycle) % 2)
+def trial_source_and_label(trial_idx):
+    # Default v3 runs use at most 80 trials, so each trial gets a fresh source.
+    # This prevents source state from carrying a previous trial's label into the
+    # current trial and becoming a shortcut around the message aggregator.
+    source = int(TRIAL_DEVICES[trial_idx % len(TRIAL_DEVICES)])
+    label = int(trial_idx % 2)
     return source, label
 
 
@@ -116,19 +118,23 @@ def filler_edge(rng, trial_source):
 
 
 def last_event_history(rng, label):
-    wrong_signal = LAST_NEG if label else LAST_POS
     correct_signal = LAST_POS if label else LAST_NEG
+    cancel_signal = LAST_NEG if label else LAST_POS
+    message_types = ["pos"] * 24 + ["neg"] * 24 + ["cancel"] + ["neutral"] * (HISTORY_SIZE - 50)
+    rng.shuffle(message_types)
+
     history = []
-
-    for idx in range(HISTORY_SIZE - 1):
-        if idx % 8 == 0:
-            history.append(jitter(rng, wrong_signal * 2.8, 0.10))
-        elif idx % 8 in (1, 2, 3):
-            history.append(jitter(rng, wrong_signal * 1.5, 0.16))
+    for message_type in message_types:
+        if message_type == "pos":
+            history.append(jitter(rng, LAST_POS * 1.15, 0.08))
+        elif message_type == "neg":
+            history.append(jitter(rng, LAST_NEG * 1.15, 0.08))
+        elif message_type == "cancel":
+            history.append(jitter(rng, cancel_signal * 2.6, 0.03))
         else:
-            history.append(jitter(rng, NEUTRAL, 0.30))
+            history.append(jitter(rng, NEUTRAL, 0.18))
 
-    history.append(jitter(rng, correct_signal * 3.4, 0.04))
+    history.append(jitter(rng, correct_signal * 2.6, 0.03))
     return history
 
 
@@ -136,9 +142,9 @@ def persistent_mean_history(rng, label):
     majority = MEAN_POS if label else MEAN_NEG
     minority = MEAN_NEG if label else MEAN_POS
     message_types = (
-        ["majority"] * 82
-        + ["minority"] * 34
-        + ["distractor"] * 10
+        ["majority"] * 96
+        + ["minority"] * 24
+        + ["distractor"] * 6
         + ["neutral"] * 2
     )
     rng.shuffle(message_types)
@@ -147,9 +153,9 @@ def persistent_mean_history(rng, label):
     history = []
     for message_type in message_types:
         if message_type == "majority":
-            history.append(jitter(rng, majority, 0.13))
+            history.append(jitter(rng, majority, 0.08))
         elif message_type == "minority":
-            history.append(jitter(rng, minority, 0.13))
+            history.append(jitter(rng, minority, 0.08))
         elif message_type == "distractor":
             sign = 1.0 if rng.random() < 0.5 else -1.0
             history.append(jitter(rng, sign * MEAN_DISTRACTOR, 0.06))
@@ -182,20 +188,20 @@ def rare_spike_history(rng, label):
 
 
 def ordered_pattern_history(rng, label):
-    history = [jitter(rng, NEUTRAL, 0.16) for _ in range(HISTORY_SIZE)]
+    history = [jitter(rng, NEUTRAL, 0.08) for _ in range(HISTORY_SIZE)]
 
     # Same multiset and same final token in both classes. The discriminative
     # information is whether A precedes B or B precedes A before the final C.
     pattern = [ORDER_A, ORDER_B, ORDER_C] if label else [ORDER_B, ORDER_A, ORDER_C]
-    positions = [HISTORY_SIZE - 11, HISTORY_SIZE - 6, HISTORY_SIZE - 1]
+    positions = [HISTORY_SIZE - 5, HISTORY_SIZE - 3, HISTORY_SIZE - 1]
     for pos, token in zip(positions, pattern):
-        history[pos] = jitter(rng, token, 0.04)
+        history[pos] = jitter(rng, token, 0.02)
 
-    decoy_positions = rng.choice(np.arange(8, HISTORY_SIZE - 20), size=12, replace=False)
-    decoys = [ORDER_A, ORDER_B, ORDER_C] * 4
+    decoy_positions = rng.choice(np.arange(8, HISTORY_SIZE - 24), size=6, replace=False)
+    decoys = [ORDER_A, ORDER_B, ORDER_C] * 2
     rng.shuffle(decoys)
     for pos, token in zip(decoy_positions, decoys):
-        history[pos] = jitter(rng, token, 0.09)
+        history[pos] = jitter(rng, token * 0.55, 0.05)
 
     return history
 
@@ -219,7 +225,7 @@ def generate_dataset(mode, seed, num_trials=DEFAULT_TRIALS):
 
     for trial_idx in range(num_trials):
         split, local_idx = trial_split(trial_idx, num_trials)
-        source, label = trial_source_and_label(local_idx)
+        source, label = trial_source_and_label(trial_idx)
         history = build_history(rng, mode, label)
 
         for feature in history:

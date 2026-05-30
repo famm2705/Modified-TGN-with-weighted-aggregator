@@ -48,6 +48,7 @@ DATASET_SUITES = {
     "generator": "toydatasets_generator.py",
     "num_trials": 32,
     "query_only_labels": False,
+    "embedding_module": "graph_attention",
   },
   "v3": {
     "datasets": V3_DATASETS,
@@ -55,6 +56,7 @@ DATASET_SUITES = {
     "generator": "toydatasets_v3_generator.py",
     "num_trials": 80,
     "query_only_labels": True,
+    "embedding_module": "identity",
   },
 }
 
@@ -128,6 +130,12 @@ def parse_args():
                       help="Batch size. The isolated datasets are designed around 128.")
   parser.add_argument("--n-degree", type=int, default=10,
                       help="Number of temporal neighbors sampled by TGN.")
+  parser.add_argument("--embedding-module", default=None,
+                      choices=["graph_attention", "graph_sum", "identity", "time"],
+                      help=(
+                        "TGN embedding module for both training phases. Defaults to identity "
+                        "for v3 label-isolation datasets and graph_attention for v2."
+                      ))
   parser.add_argument("--gpu", type=int, default=0,
                       help="CUDA device index used by the training scripts.")
   parser.add_argument("--seed-base", type=int, default=0,
@@ -179,6 +187,8 @@ def apply_suite_defaults(args):
     args.num_trials = suite["num_trials"]
   if args.query_only_labels is None:
     args.query_only_labels = suite["query_only_labels"]
+  if args.embedding_module is None:
+    args.embedding_module = suite["embedding_module"]
   return args
 
 
@@ -299,6 +309,7 @@ def write_manifest(path, args, exp_root, data_dir, models_dir, checkpoints_dir,
     "patience": args.patience,
     "batch_size": args.batch_size,
     "n_degree": args.n_degree,
+    "embedding_module": args.embedding_module,
     "seed_base": args.seed_base,
     "use_memory": True,
     "learnable": True,
@@ -374,6 +385,8 @@ def self_supervised_command(args, project_root, data_dir, models_dir, checkpoint
     str(args.batch_size),
     "--n_degree",
     str(args.n_degree),
+    "--embedding_module",
+    args.embedding_module,
     "--gpu",
     str(args.gpu),
     "--seed",
@@ -418,6 +431,8 @@ def supervised_command(args, project_root, data_dir, models_dir, checkpoints_dir
     str(args.batch_size),
     "--n_degree",
     str(args.n_degree),
+    "--embedding_module",
+    args.embedding_module,
     "--gpu",
     str(args.gpu),
     "--seed",
@@ -651,6 +666,7 @@ def main():
   print(f"Experiment folder: {exp_root}")
   print(f"Per-epoch checkpoints: {checkpoints_dir}")
   print(f"Dataset suite: {args.dataset_suite}")
+  print(f"Embedding module: {args.embedding_module}")
   print(f"Supervised label filter: {'query_mask=1 rows' if args.query_only_labels else 'all rows'}")
   print(f"Supervised label control: {args.supervised_label_control}")
   print(f"Supervised input control: {args.supervised_input_control}")
